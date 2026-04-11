@@ -1,0 +1,61 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+ provider = "prisma-client-js"
+}
+
+datasource db {
+ provider = "postgresql"
+ url      = env("DATABASE_URL")
+}
+
+model User {
+ id           String   @id @default(uuid())
+ email        String   @unique
+ passwordHash String
+ role         String   @default("user")
+ createdAt    DateTime @default(now())
+
+ documents Document[]
+ tokens    RefreshToken[]
+}
+
+model Document {
+ id        String   @id @default(uuid())
+ userId    String
+ title     String
+ content   String
+ status    String   @default("pending")
+ createdAt DateTime @default(now())
+
+ user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RefreshToken {
+ id        String   @id @default(uuid())
+ token     String
+ userId    String
+ expiresAt DateTime
+
+ user User @relation(fields: [userId], references: [id])
+}
+
+model AccessLog {
+ id         String   @id @default(uuid())
+ userId     String
+ documentId String
+ action     String
+ createdAt  DateTime @default(now())
+}
+
+model BlacklistedToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
