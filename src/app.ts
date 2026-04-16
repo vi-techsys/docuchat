@@ -4,15 +4,16 @@ import documentRoutes from "./routes/documents.routes"
 import authRoutes from "./routes/auth.routes"
 import welcomeRoutes from "./routes/welcome.route"
 import { errorHandler } from "./middleware/errorHandler"
+import { logger, customLogger } from "./lib/logger"
 
 dotenv.config()
 
 const app = express()
 
-import { logger } from "./lib/logger"
-logger.info("Server starting...")
+customLogger.info("Server starting...")
 
 app.use(express.json())
+app.use(logger)
 
 app.use("/api/v1", welcomeRoutes)
 app.use("/api/v1/documents", documentRoutes)
