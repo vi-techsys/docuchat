@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express"
 import { AppError } from "../lib/errors"
-import { logger } from "../lib/logger"
+import { customLogger } from "../lib/logger"
 
 export function errorHandler(
  err: Error,
@@ -9,7 +9,7 @@ export function errorHandler(
  next: NextFunction
 ) {
  if (err instanceof AppError) {
-  logger.warn(err.message)
+  customLogger.warn(err.message)
 
   return res.status(err.statusCode).json({
    success: false,
@@ -20,7 +20,7 @@ export function errorHandler(
   })
  }
 
- logger.error(err)
+ customLogger.error(err.message || err.stack || String(err))
 
  return res.status(500).json({
   success: false,

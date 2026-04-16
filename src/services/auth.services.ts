@@ -13,8 +13,8 @@ export async function register(email: string, password: string) {
 
 export async function login(email: string, password: string) {
 
- const user = await prisma.user.findUnique({
-  where: { email }
+ const user = await prisma.user.findFirst({
+  where: { email, deletedAt: null }
  })
 
  if (!user) throw Error("Invalid credentials")
@@ -41,9 +41,10 @@ export async function login(email: string, password: string) {
 }
 
 export async function logout(userId: string, accessToken: string) {
-  // Delete all refresh tokens for this user
-  await prisma.refreshToken.deleteMany({
-    where: { userId }
+  // Soft delete all refresh tokens for this user
+  await prisma.refreshToken.updateMany({
+    where: { userId, deletedAt: null },
+    data: { deletedAt: new Date() }
   })
   
   // Blacklist the access token to invalidate it immediately
@@ -56,4 +57,17 @@ export async function logout(userId: string, accessToken: string) {
   })
   
   return { success: true }
+}
+
+export async function softDeleteUser(userId: string) {
+  return prisma.user.update({
+    where: { id: userId },
+    data: { deletedAt: new Date() }
+  })
+}
+
+export async function getUserById(userId: string) {
+  return prisma.user.findFirst({
+    where: { id: userId, deletedAt: null }
+  })
 }
