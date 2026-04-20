@@ -4,6 +4,7 @@ import documentRoutes from "./routes/documents.routes"
 import authRoutes from "./routes/auth.routes"
 import conversationRoutes from "./routes/conversations.routes"
 import messageRoutes from "./routes/messages.routes"
+import webhookRoutes from "./routes/webhooks.routes"
 import welcomeRoutes from "./routes/welcome.route"
 import { errorHandler } from "./middleware/errorHandler"
 import { logger, customLogger } from "./lib/logger"
@@ -27,6 +28,9 @@ app.use("/api/v1/documents", documentRoutes)
 app.use("/api/v1/auth", authRoutes)
 app.use("/api/v1/conversations", conversationRoutes)
 app.use("/api/v1/conversations", messageRoutes)
+
+app.use("/api/v1/webhooks", express.raw({ type: 'application/json' }));
+app.use("/api/v1/webhooks", webhookRoutes)
 
 // Setup Bull Board for queue monitoring
 setupBullBoard(app)
