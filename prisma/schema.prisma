@@ -34,9 +34,11 @@ model Document {
  status    String   @default("pending")
  createdAt DateTime @default(now())
  deletedAt DateTime?
+ deletedBy String?
 
  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
  conversations Conversation[]
+ chunks       Chunk[]
 }
 
 model RefreshToken {
@@ -90,4 +92,25 @@ model Message {
   deletedAt     DateTime?
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model Chunk {
+  id         String   @id @default(uuid())
+  documentId String
+  content    String
+  order      Int
+  createdAt  DateTime @default(now())
+  deletedAt  DateTime?
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+}
+
+model UsageLog {
+  id         String   @id @default(uuid())
+  userId     String
+  action     String   // "document_created", "document_deleted", etc.
+  resourceId String?  // ID of the resource being acted upon
+  resourceType String? // "document", "conversation", etc.
+  metadata   Json?    // Additional metadata about the action
+  createdAt  DateTime @default(now())
 }

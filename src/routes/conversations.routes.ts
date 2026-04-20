@@ -4,11 +4,19 @@ import type { Request, Response } from "express"
 import { authenticate } from "../middleware/auths"
 import { 
   createConversation, 
-  getConversations, 
-  getConversationById, 
+  listConversations, 
+  getConversation, 
   updateConversation, 
-  softDeleteConversation 
+  deleteConversation,
+  sendMessage 
 } from "../services/conversation.services"
+import { 
+  createConversationSchema, 
+  updateConversationSchema, 
+  listConversationsSchema, 
+  sendMessageSchema,
+  conversationIdSchema 
+} from "../validators/conversation.validators"
 
 const router = Router()
 
@@ -18,49 +26,58 @@ router.post("/", authenticate, async (req: Request, res: Response) => {
     throw new Error("User not authenticated")
   }
 
-  const { documentId, title } = req.body
-
-  if (!documentId || !title) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "documentId and title are required"
-      }
-    })
-  }
-
   try {
-    const conversation = await createConversation(req.user.sub, documentId, title)
+    const validatedData = createConversationSchema.parse(req.body)
+    const conversation = await createConversation(req.user.sub, validatedData.documentId, validatedData.title)
 
     res.status(201).json({
       success: true,
       data: conversation
     })
   } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid input data",
+          details: error.errors
+        }
+      })
+    }
     throw error
   }
 })
 
-// GET /api/v1/conversations - Get all conversations for a user
+// GET /api/v1/conversations - List conversations with pagination and latest message preview
 router.get("/", authenticate, async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }
 
-  const { documentId } = req.query
-
   try {
-    const conversations = await getConversations(
-      req.user.sub, 
-      documentId as string
-    )
+    const validatedQuery = listConversationsSchema.parse(req.query)
+    const result = await listConversations({
+      ...validatedQuery,
+      userId: req.user.sub
+    })
 
     res.json({
       success: true,
-      data: conversations
+      data: result.data,
+      meta: result.meta
     })
   } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid query parameters",
+          details: error.errors
+        }
+      })
+    }
     throw error
   }
 })
@@ -71,10 +88,9 @@ router.get("/:id", authenticate, async (req: Request, res: Response) => {
     throw new Error("User not authenticated")
   }
 
-  const { id } = req.params
-
   try {
-    const conversation = await getConversationById(id, req.user.sub)
+    const { id } = conversationIdSchema.parse(req.params)
+    const conversation = await getConversation(id, req.user.sub)
 
     if (!conversation) {
       return res.status(404).json({
@@ -91,6 +107,16 @@ router.get("/:id", authenticate, async (req: Request, res: Response) => {
       data: conversation
     })
   } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid conversation ID",
+          details: error.errors
+        }
+      })
+    }
     throw error
   }
 })
@@ -101,27 +127,27 @@ router.put("/:id", authenticate, async (req: Request, res: Response) => {
     throw new Error("User not authenticated")
   }
 
-  const { id } = req.params
-  const { title } = req.body
-
-  if (!title) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: "VALIDATION_ERROR",
-        message: "title is required"
-      }
-    })
-  }
-
   try {
-    const conversation = await updateConversation(id, req.user.sub, { title })
+    const { id } = conversationIdSchema.parse(req.params)
+    const validatedData = updateConversationSchema.parse(req.body)
+    
+    const conversation = await updateConversation(id, req.user.sub, validatedData)
 
     res.json({
       success: true,
       data: conversation
     })
   } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid input data",
+          details: error.errors
+        }
+      })
+    }
     throw error
   }
 })
@@ -132,16 +158,74 @@ router.delete("/:id", authenticate, async (req: Request, res: Response) => {
     throw new Error("User not authenticated")
   }
 
-  const { id } = req.params
-
   try {
-    await softDeleteConversation(id, req.user.sub)
+    const { id } = conversationIdSchema.parse(req.params)
+    await deleteConversation(id, req.user.sub)
 
     res.json({
       success: true,
       message: "Conversation deleted successfully"
     })
   } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid conversation ID",
+          details: error.errors
+        }
+      })
+    }
+    throw error
+  }
+})
+
+// POST /api/v1/conversations/:id/messages - Send a message (creates both user and assistant messages in transaction)
+router.post("/:id/messages", authenticate, async (req: Request, res: Response) => {
+  if (!req.user) {
+    throw new Error("User not authenticated")
+  }
+
+  try {
+    const { id } = conversationIdSchema.parse(req.params)
+    const { message } = sendMessageSchema.parse(req.body)
+    
+    // For demo purposes, we'll create a simple assistant response
+    // In a real app, this would call an AI service
+    const assistantResponse = `I received your message: "${message}". This is a placeholder response.`
+    
+    const result = await sendMessage(id, req.user.sub, message, assistantResponse)
+
+    res.status(201).json({
+      success: true,
+      data: {
+        userMessage: result.userMessage,
+        assistantMessage: result.assistantMessage
+      }
+    })
+  } catch (error: any) {
+    if (error.name === 'ZodError') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid input data",
+          details: error.errors
+        }
+      })
+    }
+    
+    if (error.message === 'Conversation not found') {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: "NOT_FOUND",
+          message: "Conversation not found"
+        }
+      })
+    }
+    
     throw error
   }
 })
