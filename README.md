@@ -1,4 +1,4 @@
-# DocuShare API
+# DocuChat API
 
 A document sharing API built with Express.js, TypeScript, and Prisma.
 
@@ -77,7 +77,7 @@ Returns a welcome message.
 {
   "success": true,
   "data": {
-    "message": "Welcome to DocuShare!"
+    "message": "Welcome to DocuChat!"
   }
 }
 ```
@@ -239,7 +239,7 @@ The project uses TypeScript with strict mode enabled for type safety.
 ### Environment Variables
 Create a `.env` file with the following variables:
 ```
-DATABASE_URL=postgresql://username:password@localhost:5432/docushare
+DATABASE_URL=postgresql://username:password@localhost:5432/DocuChat
 JWT_ACCESS_SECRET=your-jwt-access-secret
 JWT_REFRESH_SECRET=your-jwt-refresh-secret
 PORT=5000
