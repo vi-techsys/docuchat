@@ -2,8 +2,12 @@ import { Router } from "express"
 import type { Request, Response } from "express"
 import { register, login, logout } from "../services/auth.services"
 import { authenticate } from "../middleware/auths"
+import { noCache } from "../middleware/cache.middleware"
 
 const router = Router()
+
+// Apply no-cache to all auth routes
+router.use(noCache())
 
 router.post("/register", async (req: Request, res: Response) => {
   try {

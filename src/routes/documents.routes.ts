@@ -5,6 +5,7 @@ import { authenticate } from "../middleware/auths"
 import { createDocument, listDocuments, getDocument, updateDocument, deleteDocument } from "../services/document.services"
 import { createDocumentSchema, updateDocumentSchema, listDocumentsSchema, documentIdSchema } from "../validators/document.validators"
 import { queueDocumentForProcessing } from "../queues/document.queue"
+import { privateCache, invalidateCache } from "../middleware/cache.middleware"
 
 const router = Router()
 
@@ -42,7 +43,7 @@ router.post("/", authenticate, async (req: Request, res: Response) => {
 })
 
 // GET /api/v1/documents - List documents with pagination, filtering, and sorting
-router.get("/", authenticate, async (req: Request, res: Response) => {
+router.get("/", authenticate, privateCache(300), async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }
@@ -75,7 +76,7 @@ router.get("/", authenticate, async (req: Request, res: Response) => {
 })
 
 // GET /api/v1/documents/:id - Get a specific document
-router.get("/:id", authenticate, async (req: Request, res: Response) => {
+router.get("/:id", authenticate, privateCache(600), async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }
@@ -114,7 +115,7 @@ router.get("/:id", authenticate, async (req: Request, res: Response) => {
 })
 
 // PUT /api/v1/documents/:id - Update a document
-router.put("/:id", authenticate, async (req: Request, res: Response) => {
+router.put("/:id", authenticate, invalidateCache(['doc:*', 'doc:list:*']), async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }
@@ -145,7 +146,7 @@ router.put("/:id", authenticate, async (req: Request, res: Response) => {
 })
 
 // DELETE /api/v1/documents/:id - Soft delete a document
-router.delete("/:id", authenticate, async (req: Request, res: Response) => {
+router.delete("/:id", authenticate, invalidateCache(['doc:*', 'doc:list:*']), async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }

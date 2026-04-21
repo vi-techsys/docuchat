@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma"
+import { cacheGetOrSet, simpleKey, CACHE_TTL } from "../lib/cache"
 
 export interface ListDocumentsOptions {
   userId?: string
@@ -111,28 +112,64 @@ export async function listDocuments(options: ListDocumentsOptions = {}): Promise
 }
 
 export async function getDocument(documentId: string, userId?: string) {
-  const where = userId 
-    ? { id: documentId, userId, deletedAt: null }
-    : { id: documentId, deletedAt: null }
-    
-  return prisma.document.findFirst({
-    where,
-    include: {
-      user: {
-        select: {
-          id: true,
-          email: true
+  const cacheKey = simpleKey('doc', documentId, userId || 'public');
+  
+  return cacheGetOrSet(
+    cacheKey,
+    async () => {
+      console.log(`Fetching document ${documentId} from database`);
+      
+      const where = userId 
+        ? { id: documentId, userId, deletedAt: null }
+        : { id: documentId, deletedAt: null }
+        
+      const document = await prisma.document.findFirst({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true
+            }
+          }
         }
+      });
+
+      if (!document) {
+        return null;
       }
-    }
-  })
+
+      return document;
+    },
+    CACHE_TTL.DOCUMENT_METADATA // 15 minutes TTL
+  );
+}
+
+export async function invalidateDocumentCache(documentId: string, userId?: string) {
+  const cacheKey = simpleKey('doc', documentId, userId || 'public');
+  const { cacheDel } = await import('../lib/cache');
+  
+  const deleted = await cacheDel(cacheKey);
+  console.log(`Invalidated document cache for ${documentId}: ${deleted ? 'success' : 'failed'}`);
+  
+  return deleted;
 }
 
 export async function updateDocument(documentId: string, userId: string, data: Partial<{ title: string; content: string; status: string }>) {
-  return prisma.document.update({
+  const document = await prisma.document.update({
     where: { id: documentId, userId },
     data
-  })
+  });
+
+  // Invalidate cache after successful update
+  try {
+    const { cacheInvalidators } = await import('../events/cache.events');
+    await cacheInvalidators.invalidateDocument(documentId, userId);
+  } catch (error) {
+    console.error('Failed to invalidate document cache:', error);
+  }
+
+  return document;
 }
 
 export async function deleteDocument(documentId: string, userId: string) {
@@ -157,6 +194,14 @@ export async function deleteDocument(documentId: string, userId: string) {
       }
     }
   })
+
+  // Invalidate cache after successful deletion
+  try {
+    const { cacheInvalidators } = await import('../events/cache.events');
+    await cacheInvalidators.invalidateDocument(documentId, userId);
+  } catch (error) {
+    console.error('Failed to invalidate document cache:', error);
+  }
 
   return document
 }

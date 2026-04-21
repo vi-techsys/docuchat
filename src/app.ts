@@ -5,11 +5,14 @@ import authRoutes from "./routes/auth.routes"
 import conversationRoutes from "./routes/conversations.routes"
 import messageRoutes from "./routes/messages.routes"
 import webhookRoutes from "./routes/webhooks.routes"
+import adminRoutes from "./routes/admin.routes"
 import welcomeRoutes from "./routes/welcome.route"
 import { errorHandler } from "./middleware/errorHandler"
 import { logger, customLogger } from "./lib/logger"
 // Import document events to ensure they're loaded
 import "./events/document.events"
+// Import cache events to ensure they're loaded
+import "./events/cache.events"
 // Import worker and Bull Board for queue processing
 import "./queues/document.worker"
 import { setupBullBoard } from "./queues/bull-board"
@@ -26,6 +29,7 @@ app.use(logger)
 app.use("/api/v1", welcomeRoutes)
 app.use("/api/v1/documents", documentRoutes)
 app.use("/api/v1/auth", authRoutes)
+app.use("/api/v1/admin", adminRoutes)
 app.use("/api/v1/conversations", conversationRoutes)
 app.use("/api/v1/conversations", messageRoutes)
 
