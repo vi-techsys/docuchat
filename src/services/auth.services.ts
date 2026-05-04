@@ -2,6 +2,9 @@ import bcrypt from "bcryptjs"
 import { prisma } from "../lib/prisma"
 import { generateAccessToken, generateRefreshToken } from "../lib/tokens"
 import { cacheGetOrSet, simpleKey, CACHE_TTL } from "../lib/cache"
+import { trackFailedLoginAttempt, clearFailedLoginAttempts } from "../events/security.events"
+import { recordAuthEvent, recordCacheOperation } from "../lib/metrics"
+import { logAuthEvent, logCacheOperation, logPerformance } from "../lib/structuredLogger"
 
 export async function register(email: string, password: string) {
 
@@ -12,32 +15,69 @@ export async function register(email: string, password: string) {
  })
 }
 
-export async function login(email: string, password: string) {
-
- const user = await prisma.user.findFirst({
-  where: { email, deletedAt: null }
- })
-
- if (!user) throw Error("Invalid credentials")
-
- const valid = await bcrypt.compare(password, user.passwordHash)
-
- if (!valid) throw Error("Invalid credentials")
-
- const refreshToken = generateRefreshToken(user.id)
+export async function login(email: string, password: string, ip?: string, userAgent?: string) {
+  const startTime = Date.now();
   
-  // Store refresh token in database
-  await prisma.refreshToken.create({
-    data: {
-      token: refreshToken,
-      userId: user.id,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-    }
-  })
+  try {
+    const user = await prisma.user.findFirst({
+      where: { email, deletedAt: null }
+    });
 
-  return {
-    accessToken: generateAccessToken(user.id),
-    refreshToken
+    if (!user) {
+      // Track failed login attempt
+      if (ip) {
+        await trackFailedLoginAttempt(ip, userAgent, undefined, email);
+        recordAuthEvent('login', 'failure', ip);
+        logAuthEvent('login', 'failure', { ip, userAgent, email });
+      }
+      throw Error("Invalid credentials");
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+
+    if (!valid) {
+      // Track failed login attempt
+      if (ip) {
+        await trackFailedLoginAttempt(ip, userAgent, user.id, email);
+        recordAuthEvent('login', 'failure', ip);
+        logAuthEvent('login', 'failure', { ip, userAgent, userId: user.id, email });
+      }
+      throw Error("Invalid credentials");
+    }
+
+    // Clear failed login attempts on successful login
+    if (ip) {
+      await clearFailedLoginAttempts(ip);
+    }
+
+    const refreshToken = generateRefreshToken(user.id);
+    
+    // Store refresh token in database
+    await prisma.refreshToken.create({
+      data: {
+        token: refreshToken,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+      }
+    });
+
+    // Record successful login
+    if (ip) {
+      recordAuthEvent('login', 'success', ip);
+      logAuthEvent('login', 'success', { ip, userAgent, userId: user.id, email });
+    }
+
+    const duration = Date.now() - startTime;
+    logPerformance('login', duration, { userId: user.id, email });
+
+    return {
+      accessToken: generateAccessToken(user.id),
+      refreshToken
+    };
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logPerformance('login', duration, { email, error: error instanceof Error ? error.message : 'Unknown error' });
+    throw error;
   }
 }
 

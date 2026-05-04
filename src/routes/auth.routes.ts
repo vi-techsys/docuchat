@@ -48,7 +48,10 @@ router.post("/login", async (req: Request, res: Response) => {
       })
     }
 
-    const tokens = await login(email, password)
+    const ip = req.ip || req.connection.remoteAddress
+    const userAgent = req.get('User-Agent')
+    
+    const tokens = await login(email, password, ip, userAgent)
     
     res.json({
       success: true,
