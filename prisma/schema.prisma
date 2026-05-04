@@ -5,68 +5,139 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
- provider = "prisma-client-js"
+  provider = "prisma-client-js"
 }
 
 datasource db {
- provider = "postgresql"
- url      = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
- id           String   @id @default(uuid())
- email        String   @unique
- passwordHash String
- role         String   @default("user")
- createdAt    DateTime @default(now())
- deletedAt    DateTime?
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  role         String   @default("user")
+  tier         String   @default("free") // "free", "pro", "enterprise"
+  isActive     Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
 
- documents    Document[]
- conversations Conversation[]
- tokens       RefreshToken[]
+  // Relations
+  documents    Document[]
+  conversations Conversation[]
+  tokens       RefreshToken[]
+  accessLogs   AccessLog[]
+  usageLogs    UsageLog[]
+  blacklistedTokens BlacklistedToken[]
+
+  @@index([email])
+  @@index([role])
+  @@index([tier])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@index([role, deletedAt])
+  @@index([tier, deletedAt])
+  @@index([isActive, deletedAt])
+  @@map("users")
 }
 
 model Document {
- id        String   @id @default(uuid())
- userId    String
- title     String
- content   String
- status    String   @default("pending")
- createdAt DateTime @default(now())
- deletedAt DateTime?
- deletedBy String?
+  id          String   @id @default(uuid())
+  userId      String
+  title       String
+  content     String   @db.Text
+  status      String   @default("pending") // "pending", "processing", "completed", "failed"
+  fileUrl     String?  // URL to stored file
+  fileSize    Int?     // File size in bytes
+  mimeType    String?  // MIME type of the file
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+  deletedBy   String?
 
- user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
- conversations Conversation[]
- chunks       Chunk[]
+  // Relations
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+  chunks       Chunk[]
+  accessLogs   AccessLog[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([deletedAt, status])
+  @@map("documents")
 }
 
 model RefreshToken {
- id        String   @id @default(uuid())
- token     String
- userId    String
- expiresAt DateTime
- deletedAt DateTime?
+  id        String   @id @default(uuid())
+  token     String
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  deletedAt DateTime?
 
- user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([deletedAt])
+  @@index([token])
+  @@map("refresh_tokens")
 }
 
 model AccessLog {
- id         String   @id @default(uuid())
- userId     String
- documentId String
- action     String
- createdAt  DateTime @default(now())
- deletedAt  DateTime?
+  id         String   @id @default(uuid())
+  userId     String
+  documentId String?
+  action     String   // "view", "download", "edit", "delete", "share"
+  ipAddress  String?
+  userAgent  String?
+  metadata   Json?    // Additional metadata about the action
+  createdAt  DateTime @default(now())
+  deletedAt  DateTime?
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([documentId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@index([userId, createdAt])
+  @@index([documentId, createdAt])
+  @@index([action, createdAt])
+  @@index([ipAddress])
+  @@map("access_logs")
 }
 
 model BlacklistedToken {
   id        String   @id @default(uuid())
   token     String   @unique
   userId    String
+  reason    String?  // Reason for blacklisting
   expiresAt DateTime
   createdAt DateTime @default(now())
   deletedAt DateTime?
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@index([token])
+  @@map("blacklisted_tokens")
 }
 
 model Conversation {
@@ -74,54 +145,125 @@ model Conversation {
   userId     String
   documentId String
   title      String
+  status     String   @default("active") // "active", "archived", "deleted"
+  lastMessageAt DateTime?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   deletedAt  DateTime?
 
+  // Relations
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   document Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
   messages Message[]
+
+  @@index([userId])
+  @@index([documentId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@index([deletedAt])
+  @@index([userId, status])
+  @@index([userId, updatedAt])
+  @@index([documentId, status])
+  @@index([lastMessageAt])
+  @@map("conversations")
 }
 
 model Message {
   id            String   @id @default(uuid())
   conversationId String
-  content       String
+  content       String   @db.Text
   role          String   // "user" or "assistant"
+  tokenCount    Int?     // Number of tokens in the message
+  model         String?  // AI model used for assistant messages
+  temperature   Float?   // Temperature setting for AI responses
   createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
   deletedAt     DateTime?
 
+  // Relations
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([role])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@index([conversationId, role])
+  @@index([conversationId, createdAt])
+  @@index([role, createdAt])
+  @@map("messages")
 }
 
 model Chunk {
   id         String   @id @default(uuid())
   documentId String
-  content    String
+  content    String   @db.Text
+  embedding  Json?    // Vector embedding for semantic search (stored as JSON)
   order      Int
+  tokenCount Int?     // Number of tokens in this chunk
   createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
   deletedAt  DateTime?
 
+  // Relations
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([order])
+  @@index([deletedAt])
+  @@index([documentId, order])
+  @@index([deletedAt, documentId])
+  @@map("chunks")
 }
 
 model WebhookEvent {
   id           String   @id @default(uuid())
   eventId      String   @unique // Unique identifier from webhook provider
   eventType    String   // Type of webhook event
+  source       String   // Source of the webhook (e.g., "stripe", "github")
   payload      Json     // Full webhook payload
   processed    Boolean  @default(false)
   processedAt  DateTime?
+  errorMessage String?  // Error message if processing failed
+  retryCount   Int      @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  @@index([eventId])
+  @@index([eventType])
+  @@index([source])
+  @@index([processed])
+  @@index([createdAt])
+  @@index([processed, createdAt])
+  @@index([retryCount])
+  @@map("webhook_events")
 }
 
 model UsageLog {
-  id         String   @id @default(uuid())
-  userId     String
-  action     String   // "document_created", "document_deleted", etc.
-  resourceId String?  // ID of the resource being acted upon
-  resourceType String? // "document", "conversation", etc.
-  metadata   Json?    // Additional metadata about the action
-  createdAt  DateTime @default(now())
+  id           String   @id @default(uuid())
+  userId       String
+  action       String   // "document_created", "document_deleted", "conversation_started", etc.
+  resourceType String?  // "document", "conversation", "message", "user", etc.
+  resourceId   String?  // ID of the resource being acted upon
+  metadata     Json?    // Additional metadata about the action (cost, duration, etc.)
+  ipAddress    String?  // IP address of the user
+  userAgent    String?  // User agent string
+  cost         Float?   // Cost associated with the action (e.g., API call cost)
+  duration     Int?     // Duration of the action in milliseconds
+  createdAt    DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([resourceType])
+  @@index([createdAt])
+  @@index([userId, action])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([resourceType, createdAt])
+  @@index([cost])
+  @@index([ipAddress])
+  @@map("usage_logs")
 }
