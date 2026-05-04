@@ -75,62 +75,55 @@ export function conditionalGet(options: CacheOptions = {}) {
   const opts = { ...DEFAULT_CACHE_OPTIONS, ...options };
   
   return (req: Request, res: Response, next: NextFunction) => {
-    // Store original res.json and res.send methods
-    const originalJson = res.json;
-    const originalSend = res.send;
+    // Set cache headers immediately
+    setCacheHeaders(res, opts);
     
-    let responseData: any;
-    let statusCode: number = 200;
-    
-    // Override res.json to capture response data
-    res.json = function(data: any) {
-      responseData = data;
-      statusCode = res.statusCode || 200;
+    // For ETag support, we need to handle it differently
+    if (opts.etag) {
+      // Store response data for ETag generation
+      let responseData: any;
+      let originalJson = res.json;
+      let originalSend = res.send;
       
-      if (opts.etag && responseData !== undefined) {
-        const etag = generateETag(responseData);
-        res.set('ETag', etag);
+      // Override methods only for ETag generation
+      (res as any).json = function(data: any) {
+        responseData = data;
         
-        // Check for If-None-Match header
-        const ifNoneMatch = req.get('If-None-Match');
-        if (etagMatches(ifNoneMatch, etag)) {
-          // Return 304 Not Modified
-          res.status(304).end();
-          return res;
+        if (responseData !== undefined) {
+          const etag = generateETag(responseData);
+          res.set('ETag', etag);
+          
+          // Check for If-None-Match header
+          const ifNoneMatch = req.get('If-None-Match');
+          if (etagMatches(ifNoneMatch, etag)) {
+            // Return 304 Not Modified
+            res.status(304).end();
+            return res;
+          }
         }
-      }
-      
-      // Set cache headers
-      setCacheHeaders(res, opts);
-      
-      // Call original json method
-      return originalJson.call(res, data);
-    } as any;
-    
-    // Override res.send to capture response data
-    res.send = function(data: any) {
-      responseData = data;
-      statusCode = res.statusCode || 200;
-      
-      if (opts.etag && responseData !== undefined) {
-        const etag = generateETag(responseData);
-        res.set('ETag', etag);
         
-        // Check for If-None-Match header
-        const ifNoneMatch = req.get('If-None-Match');
-        if (etagMatches(ifNoneMatch, etag)) {
-          // Return 304 Not Modified
-          res.status(304).end();
-          return res;
+        return originalJson.call(this, data);
+      };
+      
+      (res as any).send = function(data: any) {
+        responseData = data;
+        
+        if (responseData !== undefined) {
+          const etag = generateETag(responseData);
+          res.set('ETag', etag);
+          
+          // Check for If-None-Match header
+          const ifNoneMatch = req.get('If-None-Match');
+          if (etagMatches(ifNoneMatch, etag)) {
+            // Return 304 Not Modified
+            res.status(304).end();
+            return res;
+          }
         }
-      }
-      
-      // Set cache headers
-      setCacheHeaders(res, opts);
-      
-      // Call original send method
-      return originalSend.call(res, data);
-    } as any;
+        
+        return originalSend.call(this, data);
+      };
+    }
     
     next();
   };
@@ -140,10 +133,15 @@ export function conditionalGet(options: CacheOptions = {}) {
  * Middleware for no-cache endpoints (like auth)
  */
 export function noCache() {
-  return conditionalGet({
-    noStore: true,
-    etag: false,
-  });
+  return (req: Request, res: Response, next: NextFunction) => {
+    // Set cache-control headers to prevent caching
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('Surrogate-Control', 'no-store');
+    
+    next();
+  };
 }
 
 /**
