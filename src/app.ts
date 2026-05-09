@@ -9,10 +9,14 @@ import webhookRoutes from "./routes/webhooks.routes"
 import adminRoutes from "./routes/admin.routes"
 import welcomeRoutes from "./routes/welcome.route"
 import healthRoutes from "./routes/health.routes"
+import ragRoutes from "./routes/rag.routes"
 import { errorHandler } from "./middleware/errorHandler"
 import { logger, customLogger } from "./lib/logger"
 import { metricsHandler } from "./lib/metrics"
 import { corsConfig } from "./middleware/security.middleware"
+
+// Import event listeners
+import "./events/ingestion.events"
 
 dotenv.config()
 
@@ -40,6 +44,7 @@ app.get("/metrics", metricsHandler)
 // API routes
 app.use("/api/v1", welcomeRoutes)
 app.use("/api/v1/documents", documentRoutes)
+app.use("/api/v1/rag", ragRoutes)
 app.use("/api/v1/auth", authRoutes)
 app.use("/api/v1/admin", adminRoutes)
 app.use("/api/v1/conversations", conversationRoutes)

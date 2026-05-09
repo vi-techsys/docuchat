@@ -48,7 +48,29 @@ export const activeQueueJobsGauge = new client.Gauge({
 export const cacheOperationCounter = new client.Counter({
   name: 'cache_operations_total',
   help: 'Total number of cache operations',
-  labelNames: ['operation', 'result', 'cache_type'],
+  labelNames: ['operation', 'cache_type', 'result'],
+  registers: [register],
+});
+
+// Ingestion metrics
+export const ingestionDuration = new client.Histogram({
+  name: 'docuchat_ingestion_duration_seconds',
+  help: 'Document ingestion duration',
+  labelNames: ['format'],
+  buckets: [1, 5, 10, 30, 60, 120, 300],
+  registers: [register],
+});
+
+export const chunksPerDocument = new client.Histogram({
+  name: 'docuchat_chunks_per_document',
+  help: 'Number of chunks generated per document',
+  buckets: [5, 10, 25, 50, 100, 250, 500],
+  registers: [register],
+});
+
+export const embeddingCacheHitRate = new client.Gauge({
+  name: 'docuchat_embedding_cache_hit_rate',
+  help: 'Percentage of embedding requests served from cache',
   registers: [register],
 });
 

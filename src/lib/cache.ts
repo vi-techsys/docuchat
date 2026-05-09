@@ -11,6 +11,7 @@ export const CACHE_TTL = {
   RATE_LIMIT: 60,             // 1 minute
   TEMPORARY: 5 * 60,          // 5 minutes
   LONG_TERM: 60 * 60,         // 1 hour
+  EMBEDDING: 7 * 24 * 60 * 60, // 7 days - embeddings don't change for same input
 } as const;
 
 // Create separate Redis connection for caching

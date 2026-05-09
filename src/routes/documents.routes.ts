@@ -2,32 +2,233 @@
 import { Router } from "express"
 import type { Request, Response } from "express"
 import { authenticate } from "../middleware/auths"
+import multer from "multer"
 import { createDocument, listDocuments, getDocument, updateDocument, deleteDocument } from "../services/document.services"
 import { createDocumentSchema, updateDocumentSchema, listDocumentsSchema, documentIdSchema } from "../validators/document.validators"
 import { queueDocumentForProcessing } from "../queues/document.queue"
 import { privateCache, invalidateCache } from "../middleware/cache.middleware"
+import { prisma } from "../lib/prisma"
+import { customLogger } from "../lib/logger"
+import { generateAndStoreEmbeddings } from "../services/embedding.service"
+import { chunkDocument } from "../lib/chunker"
+import { extractText, detectFormat } from "../lib/documentExtractor"
+import { appEvents } from "../lib/events"
 
 const router = Router()
 
-// POST /api/v1/documents - Create a new document
-router.post("/", authenticate, async (req: Request, res: Response) => {
+// Configure multer for file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept common document formats
+    const allowedTypes = [
+      'text/plain',
+      'text/markdown',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ]
+    
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true)
+    } else {
+      cb(new Error(`Unsupported file type: ${file.mimetype}`))
+    }
+  }
+})
+
+// POST /api/v1/documents - Create a new document (file upload or direct text)
+router.post("/", authenticate, upload.single('file'), async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }
 
+  const userId = req.user.sub
+
   try {
-    const validatedData = createDocumentSchema.parse(req.body)
-    const doc = await createDocument(req.user.sub, validatedData)
+    let title: string
+    let content: string
+    let filename: string | undefined
+    let mimeType: string | undefined
+    let fileSize: number | undefined
 
-    // Queue document for processing
-    await queueDocumentForProcessing(doc.id, req.user.sub)
+    // Check if this is a file upload or direct text content
+    if (req.file) {
+      // File upload case
+      const file = req.file
+      title = req.body.title || file.originalname
+      content = file.buffer.toString('utf-8')
+      filename = file.originalname
+      mimeType = file.mimetype
+      fileSize = file.size
 
-    res.status(202).json({
-      success: true,
-      data: doc,
-      message: "Document uploaded successfully and queued for processing"
+      customLogger.info(`File upload initiated`, {
+        userId,
+        filename,
+        mimeType,
+        fileSize
+      })
+    } else if (req.body.title && req.body.content) {
+      // Direct text content case
+      title = req.body.title
+      content = req.body.content
+      filename = `${title.toLowerCase().replace(/\s+/g, '-')}.txt`
+      mimeType = 'text/plain'
+      fileSize = content.length
+
+      customLogger.info(`Direct text upload initiated`, {
+        userId,
+        title,
+        contentLength: content.length
+      })
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_DATA',
+          message: 'Either file upload or title and content are required'
+        }
+      })
+    }
+
+    // Create document record
+    const document = await prisma.document.create({
+      data: {
+        user: {
+          connect: { id: userId }
+        },
+        title,
+        content,
+        status: 'processing',
+        mimeType: mimeType || 'text/plain',
+        fileSize: fileSize || content.length
+      }
     })
+
+    // Process document using new ingestion pipeline
+    let chunks: any[]
+    let pageCount: number | undefined
+
+    try {
+      if (filename && mimeType !== 'text/plain') {
+        // Extract text from file (PDF, Markdown, etc.)
+        const format = detectFormat(filename)
+        const extracted = await extractText(content, format)
+        content = extracted.text
+        pageCount = extracted.pageCount
+      }
+
+      // Chunk the text
+      chunks = chunkDocument(content, {
+        maxTokens: 500,
+        overlapTokens: 50,
+        minChunkTokens: 10, // Lower minimum for short documents
+      })
+
+    } catch (processingError) {
+      // Mark document as failed if processing fails
+      await prisma.document.update({
+        where: { id: document.id },
+        data: {
+          status: 'failed',
+          error: processingError instanceof Error ? processingError.message : 'Unknown processing error'
+        }
+      })
+
+      throw processingError
+    }
+
+    // Create chunks in database
+    const chunkRecords = await prisma.$transaction(
+      chunks.map((chunk, index) =>
+        prisma.chunk.create({
+          data: {
+            documentId: document.id,
+            index: chunk.index,
+            content: chunk.text,
+            tokenCount: chunk.tokenEstimate
+          }
+        })
+      )
+    )
+
+    // Generate embeddings and get actual costs
+    const startTime = Date.now();
+    const embeddingResult = await generateAndStoreEmbeddings(
+      chunkRecords.map(chunk => ({
+        id: chunk.id,
+        content: chunk.content
+      })),
+      userId,
+      document.id
+    )
+    const processingDuration = Date.now() - startTime;
+
+    // Use the actual cost from OpenAI
+    const actualCost = embeddingResult.cost;
+    const totalTokens = embeddingResult.tokensUsed;
+
+    // Update document status to completed
+    await prisma.document.update({
+      where: { id: document.id },
+      data: {
+        status: 'completed',
+        processedAt: new Date()
+      }
+    })
+
+    // Create usage log with actual cost directly
+    await prisma.usageLog.create({
+      data: {
+        userId: userId,
+        action: 'document_ingested',
+        resourceType: 'document',
+        resourceId: document.id,
+        metadata: JSON.stringify({
+          chunkCount: chunkRecords.length,
+          format: filename ? detectFormat(filename) : 'text',
+          pageCount: pageCount,
+          totalTokens: totalTokens,
+        }),
+        duration: processingDuration,
+        cost: actualCost > 0 ? actualCost : null,
+      },
+    });
+
+    customLogger.info('Usage log created with actual costs', {
+      documentId: document.id,
+      chunkCount: chunkRecords.length,
+      totalTokens,
+      actualCost: `$${actualCost.toFixed(6)}`,
+      processingDuration
+    });
+
+    customLogger.info(`Document processing completed`, {
+      documentId: document.id,
+      chunksCreated: chunkRecords.length,
+      tokensProcessed: chunks.reduce((sum, chunk) => sum + chunk.tokenEstimate, 0)
+    })
+
+    res.status(201).json({
+      success: true,
+      data: {
+        documentId: document.id,
+        title,
+        status: 'completed',
+        chunksCreated: chunkRecords.length,
+        tokensProcessed: chunks.reduce((sum, chunk) => sum + chunk.tokenEstimate, 0),
+        message: 'Document processed successfully with real OpenAI embeddings'
+      }
+    })
+
   } catch (error: any) {
+    customLogger.error(`Document upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`, {
+      stack: error instanceof Error ? error.stack : 'No stack trace'
+    })
+
     if (error.name === 'ZodError') {
       return res.status(400).json({
         success: false,
@@ -38,7 +239,15 @@ router.post("/", authenticate, async (req: Request, res: Response) => {
         }
       })
     }
-    throw error
+
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'UPLOAD_FAILED',
+        message: 'Failed to upload document',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }
+    })
   }
 })
 
