@@ -1,4 +1,8 @@
 import { prisma } from "../lib/prisma"
+import { semanticSearch } from './search.service';
+import { assembleContext } from './context.service';
+import { generateRAGResponse } from './rag-generation.service';
+import { customLogger } from '../lib/logger';
 
 export interface ListConversationsOptions {
   userId: string
@@ -146,59 +150,207 @@ export async function deleteConversation(conversationId: string, userId: string)
   })
 }
 
-export async function sendMessage(conversationId: string, userId: string, userMessage: string, assistantMessage: string) {
-  return await prisma.$transaction(async (tx) => {
-    // Verify conversation exists and belongs to user
-    const conversation = await tx.conversation.findFirst({
-      where: { id: conversationId, userId, deletedAt: null }
-    })
+export async function sendMessage(data: {
+  conversationId: string;
+  userId: string;
+  content: string;
+  documentId?: string;
+  correlationId?: string;
+}) {
+  const startTime = Date.now();
+  const { correlationId = 'unknown' } = data;
 
-    if (!conversation) {
-      throw new Error('Conversation not found')
-    }
-
-    // Create user message
-    const createdUserMessage = await tx.message.create({
-      data: {
-        conversationId,
-        content: userMessage,
-        role: 'user'
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // 1. Verify conversation ownership
+      const conversation = await tx.conversation.findUnique({
+        where: { id: data.conversationId },
+      });
+      
+      if (!conversation || conversation.userId !== data.userId) {
+        throw new Error('Conversation not found or access denied');
       }
-    })
 
-    // Create assistant message
-    const createdAssistantMessage = await tx.message.create({
-      data: {
-        conversationId,
-        content: assistantMessage,
-        role: 'assistant'
-      }
-    })
+      customLogger.info('Starting RAG pipeline for message', {
+        correlationId,
+        conversationId: data.conversationId,
+        userId: data.userId,
+        documentId: data.documentId,
+        messageLength: data.content.length
+      });
 
-    // Update conversation's updatedAt timestamp
-    await tx.conversation.update({
-      where: { id: conversationId },
-      data: { updatedAt: new Date() }
-    })
+      // 2. Save user message
+      const userMessage = await tx.message.create({
+        data: {
+          conversationId: data.conversationId,
+          role: 'user',
+          content: data.content,
+          tokenCount: Math.ceil(data.content.length / 4), // Rough estimate
+          model: null,
+          temperature: null,
+        },
+      });
 
-    // Log usage
-    await tx.usageLog.create({
-      data: {
-        userId,
-        action: 'message_sent',
-        resourceId: conversationId,
-        resourceType: 'conversation',
-        metadata: {
-          userMessageId: createdUserMessage.id,
-          assistantMessageId: createdAssistantMessage.id,
-          conversationTitle: conversation.title
+      // 3. Load recent conversation history
+      const history = await tx.message.findMany({
+        where: { conversationId: data.conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: { role: true, content: true },
+      });
+      const conversationHistory = history.reverse();
+
+      customLogger.info('Conversation history loaded', {
+        correlationId,
+        historyLength: conversationHistory.length
+      });
+
+      // 4. RAG: Retrieve
+      const searchResults = await semanticSearch({
+        query: data.content,
+        userId: data.userId,
+        documentId: data.documentId,
+        correlationId
+      });
+
+      customLogger.info('Semantic search completed', {
+        correlationId,
+        searchResults: searchResults.length,
+        topScore: searchResults[0]?.score || 0
+      });
+
+      // 5. RAG: Augment
+      const context = assembleContext(searchResults);
+
+      customLogger.info('Context assembled', {
+        correlationId,
+        contextChunks: context.chunks.length,
+        contextTokens: context.totalTokens
+      });
+
+      // 6. RAG: Generate
+      const ragResponse = await generateRAGResponse({
+        question: data.content,
+        context,
+        conversationHistory,
+        userId: data.userId,
+        conversationId: data.conversationId,
+        correlationId,
+      });
+
+      customLogger.info('RAG response generated', {
+        correlationId,
+        answerLength: ragResponse.answer.length,
+        tokensUsed: ragResponse.tokensUsed.total,
+        costUsd: ragResponse.costUsd,
+        processingTime: ragResponse.processingTime
+      });
+
+      // 7. Save assistant message with metadata
+      const assistantMessage = await tx.message.create({
+        data: {
+          conversationId: data.conversationId,
+          role: 'assistant',
+          content: ragResponse.answer,
+          tokenCount: ragResponse.tokensUsed.total,
+          model: ragResponse.model,
+          temperature: 0.1, // Default temperature for RAG
+        },
+      });
+
+      // 8. Log usage
+      await tx.usageLog.create({
+        data: {
+          userId: data.userId,
+          action: 'rag_message_sent',
+          resourceId: data.conversationId,
+          resourceType: 'conversation',
+          cost: ragResponse.costUsd,
+          duration: Date.now() - startTime,
+          metadata: JSON.stringify({
+            userMessageId: userMessage.id,
+            assistantMessageId: assistantMessage.id,
+            conversationTitle: conversation.title,
+            documentId: data.documentId,
+            model: ragResponse.model,
+            tokensUsed: ragResponse.tokensUsed,
+            contextChunks: context.chunks.length,
+            contextTokens: context.totalTokens,
+            searchResults: searchResults.length,
+            citations: ragResponse.citations.length,
+            processingTime: ragResponse.processingTime,
+            costUsd: ragResponse.costUsd
+          })
         }
-      }
-    })
+      });
 
-    return {
-      userMessage: createdUserMessage,
-      assistantMessage: createdAssistantMessage
-    }
-  })
+      // 9. Touch conversation updatedAt
+      await tx.conversation.update({
+        where: { id: data.conversationId },
+        data: { 
+          updatedAt: new Date(),
+          lastMessageAt: new Date()
+        },
+      });
+
+      const totalProcessingTime = Date.now() - startTime;
+      
+      customLogger.info('RAG pipeline completed successfully', {
+        correlationId,
+        conversationId: data.conversationId,
+        totalProcessingTime,
+        userMessageId: userMessage.id,
+        assistantMessageId: assistantMessage.id
+      });
+
+      return {
+        userMessage,
+        assistantMessage: {
+          ...assistantMessage,
+          citations: ragResponse.citations,
+          context: {
+            chunks: context.chunks.length,
+            tokens: context.totalTokens,
+            searchResults: searchResults.length
+          },
+          usage: {
+            tokens: ragResponse.tokensUsed,
+            cost: ragResponse.costUsd,
+            processingTime: ragResponse.processingTime
+          }
+        },
+      };
+    });
+
+  } catch (error) {
+    const totalProcessingTime = Date.now() - startTime;
+    
+    customLogger.error('RAG pipeline failed', {
+      correlationId,
+      conversationId: data.conversationId,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      totalProcessingTime
+    });
+
+    // Log the failure
+    await prisma.usageLog.create({
+      data: {
+        userId: data.userId,
+        action: 'rag_message_failed',
+        resourceId: data.conversationId,
+        resourceType: 'conversation',
+        duration: totalProcessingTime,
+        metadata: JSON.stringify({
+          error: error instanceof Error ? error.message : 'Unknown error',
+          correlationId,
+          messageLength: data.content.length
+        })
+      }
+    }).catch(logError => {
+      // Ignore logging errors to prevent cascading failures
+      console.error('Failed to log RAG failure:', logError);
+    });
+
+    throw error;
+  }
 }

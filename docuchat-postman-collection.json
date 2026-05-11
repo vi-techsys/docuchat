@@ -1,0 +1,339 @@
+{
+	"info": {
+		"_postman_id": "docuchat-rag-testing",
+		"name": "DocuChat RAG Testing",
+		"description": "Complete API testing collection for DocuChat RAG system validation",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Authentication Setup",
+			"item": [
+				{
+					"name": "Register User",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"User registered successfully\", function() { pm.expect(pm.response.code).to.equal(201); });"
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"testuser@example.com\",\n  \"password\": \"TestPassword123!\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/register"
+						}
+					}
+				},
+				{
+					"name": "Login User",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"Login successful\", function() { pm.expect(pm.response.code).to.equal(200); pm.expect(pm.response.json().data.success).to.be.true; });"
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"testuser@example.com\", \n  \"password\": \"TestPassword123!\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login"
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Document Management",
+			"item": [
+				{
+					"name": "Upload Document",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"Document uploaded successfully\", function() { pm.expect(pm.response.code).to.equal(201); });"
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"title\": \"Company Policy Document 2024\",\n  \"content\": \"This document outlines the comprehensive policies for employee conduct, benefits, and procedures. All employees are required to read and acknowledge these policies. Remote Work: Employees may work remotely up to 3 days per week with manager approval. Equipment: Company provides laptop and $1000 stipend. Vacation: 15 days paid vacation per year. Sick Leave: 10 days paid sick leave per year. Benefits: Health insurance, 401k matching, retirement plan.\",\n  \"fileUrl\": \"https://example.com/policy.pdf\",\n  \"fileSize\": 1048576,\n  \"mimeType\": \"application/pdf\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/documents"
+						}
+					}
+				},
+				{
+					"name": "List Documents",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"Documents retrieved successfully\", function() { pm.expect(pm.response.code).to.equal(200); pm.expect(pm.response.json().data.success).to.be.true; });"
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/documents"
+						}
+					}
+				},
+				{
+					"name": "Get Document",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"Document retrieved successfully\", function() { pm.expect(pm.response.code).to.equal(200); });"
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/documents/{{documentId}}"
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "RAG Conversation Testing",
+			"item": [
+				{
+					"name": "Create Conversation",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"Conversation created successfully\", function() { pm.expect(pm.response.code).to.equal(201); });"
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{accessToken}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"documentId\": \"{{documentId}}\",\n  \"title\": \"Handbook Questions\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/conversations"
+						}
+					}
+				},
+				{
+					"name": "Send RAG Messages",
+					"item": [
+						{
+							"name": "Question about Remote Work",
+							"event": [
+								{
+									"listen": "test",
+									"script": "pm.test(\"RAG response with citations\", function() {\n    const response = pm.response.json();\n    pm.expect(response.success).to.be.true;\n    pm.expect(response.data.answer).to.be.a('string');\n    pm.expect(response.data.citations).to.be.an('array');\n    pm.expect(response.data.citations[0]).to.have.property('chunkId');\n});"
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{accessToken}}"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"content\": \"What is the remote work policy?\"\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/conversations/{{conversationId}}/messages"
+								}
+							}
+						},
+						{
+							"name": "Question about Vacation Days",
+							"event": [
+								{
+									"listen": "test",
+									"script": "pm.test(\"Vacation policy response\", function() {\n    const response = pm.response.json();\n    pm.expect(response.success).to.be.true;\n    pm.expect(response.data.answer).to.be.a('string');\n});"
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{accessToken}}"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"content\": \"How much vacation do employees get?\"\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/conversations/{{conversationId}}/messages"
+								}
+							}
+						},
+						{
+							"name": "Question Not in Documents",
+							"event": [
+								{
+									"listen": "test",
+									"script": "pm.test(\"No context found response\", function() {\n    const response = pm.response.json();\n    pm.expect(response.success).to.be.true;\n    pm.expect(response.data.answer).to.include(\"couldn't find information\");\n    pm.expect(response.data.citations).to.eql([]);\n});"
+								}
+							],
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{accessToken}}"
+									},
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"content\": \"What is the company's internet policy?\"\n}"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/conversations/{{conversationId}}/messages"
+								}
+							}
+						},
+						{
+							"name": "Get Conversation Messages",
+							"event": [
+								{
+									"listen": "test",
+									"script": "pm.test(\"Conversation history retrieved\", function() {\n    const response = pm.response.json();\n    pm.expect(response.success).to.be.true;\n    pm.expect(response.data.messages).to.be.an('array');\n    pm.expect(response.data.messages.length).to.be.above(0);\n});"
+								}
+							],
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Authorization",
+										"value": "Bearer {{accessToken}}"
+									}
+								],
+								"url": {
+									"raw": "{{baseUrl}}/conversations/{{conversationId}}/messages"
+								}
+							}
+						}
+					]
+		},
+		{
+			"name": "Health Checks",
+			"item": [
+				{
+					"name": "Health Check - Live",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"Health check passed\", function() { pm.expect(pm.response.json().status).to.equal('healthy'); });"
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/health/live"
+						}
+					}
+				},
+				{
+					"name": "Health Check - Ready",
+					"event": [
+						{
+							"listen": "test",
+							"script": "pm.test(\"Readiness check passed\", function() { \n    const response = pm.response.json();\n    pm.expect(response.status).to.equal('ready');\n    pm.expect(response.data.checks.database).to.equal('connected');\n    pm.expect(response.data.checks.redis).to.equal('connected');\n});"
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/health/ready"
+						}
+					}
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:5000/api/v1"
+		},
+		{
+			"key": "accessToken",
+			"value": ""
+		},
+		{
+			"key": "documentId",
+			"value": ""
+		},
+		{
+			"key": "conversationId",
+			"value": ""
+		}
+	]
+}

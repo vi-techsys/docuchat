@@ -2,6 +2,7 @@
 import { Router } from "express"
 import type { Request, Response } from "express"
 import { authenticate } from "../middleware/auths"
+import { prisma } from "../lib/prisma"
 import { 
   createConversation, 
   listConversations, 
@@ -191,11 +192,19 @@ router.post("/:id/messages", authenticate, async (req: Request, res: Response) =
     const { id } = conversationIdSchema.parse(req.params)
     const { message } = sendMessageSchema.parse(req.body)
     
-    // For demo purposes, we'll create a simple assistant response
-    // In a real app, this would call an AI service
-    const assistantResponse = `I received your message: "${message}". This is a placeholder response.`
+    // Get conversation to extract documentId
+    const conversation = await prisma.conversation.findUnique({
+      where: { id }
+    })
     
-    const result = await sendMessage(id, req.user.sub, message, assistantResponse)
+    // Call RAG pipeline with proper data structure
+    const result = await sendMessage({
+      conversationId: id,
+      userId: req.user.sub,
+      content: message,
+      documentId: conversation?.documentId,
+      correlationId: `conv-${id}-${Date.now()}`
+    })
 
     res.status(201).json({
       success: true,
