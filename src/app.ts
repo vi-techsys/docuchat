@@ -10,6 +10,7 @@ import adminRoutes from "./routes/admin.routes"
 import welcomeRoutes from "./routes/welcome.route"
 import healthRoutes from "./routes/health.routes"
 import ragRoutes from "./routes/rag.routes"
+import agentRoutes from "./routes/agent.routes"
 import { errorHandler } from "./middleware/errorHandler"
 import { logger, customLogger } from "./lib/logger"
 import { metricsHandler } from "./lib/metrics"
@@ -45,6 +46,7 @@ app.get("/metrics", metricsHandler)
 app.use("/api/v1", welcomeRoutes)
 app.use("/api/v1/documents", documentRoutes)
 app.use("/api/v1/rag", ragRoutes)
+app.use("/api/v1/agent", agentRoutes)
 app.use("/api/v1/auth", authRoutes)
 app.use("/api/v1/admin", adminRoutes)
 app.use("/api/v1/conversations", conversationRoutes)

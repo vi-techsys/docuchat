@@ -131,6 +131,25 @@ export const apiErrorsCounter = new client.Counter({
   registers: [register],
 });
 
+// Agent metrics
+export const agentIterations = new client.Histogram({
+  name: 'docuchat_agent_iterations',
+  help: 'Number of iterations per agent run',
+  buckets: [1, 2, 3, 5, 7, 10],
+});
+
+export const agentCost = new client.Histogram({
+  name: 'docuchat_agent_cost_usd',
+  help: 'Cost per agent run in USD',
+  buckets: [0.01, 0.05, 0.10, 0.25, 0.50],
+});
+
+export const agentTerminations = new client.Counter({
+  name: 'docuchat_agent_terminations_total',
+  help: 'Agent termination reasons',
+  labelNames: ['reason'],
+});
+
 // Path normalization function to prevent cardinality explosion
 function normalizePath(path: string): string {
   // Replace UUIDs and other IDs with placeholders
