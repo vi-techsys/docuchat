@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs"
+import jwt from "jsonwebtoken"
 import { prisma } from "../lib/prisma"
 import { generateAccessToken, generateRefreshToken } from "../lib/tokens"
 import { cacheGetOrSet, simpleKey, CACHE_TTL } from "../lib/cache"
@@ -98,6 +99,62 @@ export async function logout(userId: string, accessToken: string) {
   })
   
   return { success: true }
+}
+
+export async function refreshToken(refreshToken: string) {
+  // Find the refresh token in database
+  const storedToken = await prisma.refreshToken.findFirst({
+    where: {
+      token: refreshToken,
+      deletedAt: null,
+      expiresAt: { gt: new Date() }
+    },
+    include: { user: true }
+  })
+
+  if (!storedToken) {
+    throw new Error("Invalid or expired refresh token")
+  }
+
+  // Verify the refresh token signature
+  try {
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.JWT_REFRESH_SECRET!
+    ) as { sub: string }
+
+    if (decoded.sub !== storedToken.userId) {
+      throw new Error("Token mismatch")
+    }
+  } catch (error) {
+    throw new Error("Invalid refresh token")
+  }
+
+  // Generate new access token
+  const newAccessToken = generateAccessToken(storedToken.userId)
+  
+  // Optionally generate new refresh token for better security
+  const newRefreshToken = generateRefreshToken(storedToken.userId)
+  
+  // Mark old refresh token as used
+  await prisma.refreshToken.update({
+    where: { id: storedToken.id },
+    data: { deletedAt: new Date() }
+  })
+  
+  // Store new refresh token
+  await prisma.refreshToken.create({
+    data: {
+      token: newRefreshToken,
+      userId: storedToken.userId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+    }
+  })
+
+  return {
+    accessToken: newAccessToken,
+    refreshToken: newRefreshToken
+  }
 }
 
 export async function softDeleteUser(userId: string) {

@@ -1,6 +1,6 @@
 import { Router } from "express"
 import type { Request, Response } from "express"
-import { register, login, logout } from "../services/auth.services"
+import { register, login, logout, refreshToken } from "../services/auth.services"
 import { authenticate } from "../middleware/auths"
 import { noCache } from "../middleware/cache.middleware"
 import { prisma } from "../lib/prisma"
@@ -88,6 +88,37 @@ router.post("/logout", authenticate, async (req: Request, res: Response) => {
     res.status(400).json({
       success: false,
       error: error instanceof Error ? error.message : "Logout failed"
+    })
+  }
+})
+
+router.post("/refresh", async (req: Request, res: Response) => {
+  try {
+    const { refreshToken: refreshTokenFromBody } = req.body
+    
+    if (!refreshTokenFromBody) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Refresh token is required"
+        }
+      })
+    }
+
+    const tokens = await refreshToken(refreshTokenFromBody)
+    
+    res.json({
+      success: true,
+      data: tokens
+    })
+  } catch (error) {
+    res.status(401).json({
+      success: false,
+      error: {
+        code: "REFRESH_FAILED",
+        message: error instanceof Error ? error.message : "Token refresh failed"
+      }
     })
   }
 })
