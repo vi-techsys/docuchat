@@ -20,10 +20,11 @@ export async function extractText(
 ): Promise<{ text: string; pageCount?: number }> {
   switch (format) {
     case 'text':
+      const textContent = typeof content === 'string'
+        ? content
+        : content.toString('utf-8');
       return {
-        text: typeof content === 'string'
-          ? content
-          : content.toString('utf-8'),
+        text: cleanExtractedText(textContent),
       };
 
     case 'markdown':
@@ -32,7 +33,7 @@ export async function extractText(
         ? content
         : content.toString('utf-8');
       return {
-        text: stripMarkdown(raw),
+        text: cleanExtractedText(stripMarkdown(raw)),
       };
 
     case 'pdf':
@@ -65,5 +66,7 @@ function cleanExtractedText(text: string): string {
     .replace(/\r\n/g, '\n')       // Normalize line endings
     .replace(/\n{3,}/g, '\n\n')   // Collapse excessive newlines
     .replace(/\s{3,}/g, ' ')       // Collapse excessive spaces
+    .replace(/\x00/g, '')          // Remove null bytes
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove other control characters
     .trim();
 }

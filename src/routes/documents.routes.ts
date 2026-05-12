@@ -60,7 +60,18 @@ router.post("/", authenticate, upload.single('file'), async (req: Request, res: 
       // File upload case
       const file = req.file
       title = req.body.title || file.originalname
-      content = file.buffer.toString('utf-8')
+      
+      // For binary files (PDFs, Word docs), keep buffer as-is for text extraction
+      // For text files, convert to string with proper encoding handling
+      if (file.mimetype === 'text/plain' || file.mimetype === 'text/markdown') {
+        content = file.buffer.toString('utf-8')
+        // Remove null bytes and other problematic characters
+        content = content.replace(/\x00/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      } else {
+        // For binary files, store as base64 for now, will be processed by extractText
+        content = file.buffer.toString('base64')
+      }
+      
       filename = file.originalname
       mimeType = file.mimetype
       fileSize = file.size
@@ -333,11 +344,137 @@ router.put("/:id", authenticate, invalidateCache(['doc:*', 'doc:list:*']), async
     const { id } = documentIdSchema.parse(req.params)
     const validatedData = updateDocumentSchema.parse(req.body)
     
-    const doc = await updateDocument(id, req.user.sub, validatedData)
+    // Get the current document to check if content is being updated
+    const currentDoc = await getDocument(id, req.user.sub)
+    if (!currentDoc) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: "NOT_FOUND",
+          message: "Document not found"
+        }
+      })
+    }
+
+    let updateData = { ...validatedData }
+    
+    // If content is being updated, we need to re-process the document
+    if (validatedData.content) {
+      // Clean the content to prevent encoding issues
+      const cleanedContent = validatedData.content
+        .replace(/\x00/g, '')
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      
+      updateData.content = cleanedContent
+      updateData.status = 'processing' // Reset status for re-processing
+
+      // First update the document with new content and status
+      const updatedDoc = await updateDocument(id, req.user.sub, {
+        content: cleanedContent,
+        status: 'processing'
+      })
+
+      try {
+        // Re-chunk the updated content
+        const chunks = chunkDocument(cleanedContent, {
+          maxTokens: 500,
+          overlapTokens: 50,
+          minChunkTokens: 10,
+        })
+
+        // Delete existing chunks and embeddings
+        await prisma.chunk.deleteMany({
+          where: { documentId: id }
+        })
+
+        // Create new chunks
+        const chunkRecords = await prisma.$transaction(
+          chunks.map((chunk, index) =>
+            prisma.chunk.create({
+              data: {
+                documentId: id,
+                index: chunk.index,
+                content: chunk.text,
+                tokenCount: chunk.tokenEstimate
+              }
+            })
+          )
+        )
+
+        // Generate new embeddings
+        const embeddingResult = await generateAndStoreEmbeddings(
+          chunkRecords.map(chunk => ({
+            id: chunk.id,
+            content: chunk.content
+          })),
+          req.user.sub,
+          id
+        )
+
+        // Update document status to completed
+        await prisma.document.update({
+          where: { id, userId: req.user.sub },
+          data: {
+            status: 'completed',
+            processedAt: new Date()
+          }
+        })
+
+        // Log the content update
+        await prisma.usageLog.create({
+          data: {
+            userId: req.user.sub,
+            action: 'document_content_updated',
+            resourceType: 'document',
+            resourceId: id,
+            metadata: JSON.stringify({
+              chunkCount: chunkRecords.length,
+              totalTokens: embeddingResult.tokensUsed,
+            }),
+            cost: embeddingResult.cost > 0 ? embeddingResult.cost : null,
+          },
+        })
+
+      } catch (processingError) {
+        // Mark document as failed if re-processing fails
+        await prisma.document.update({
+          where: { id, userId: req.user.sub },
+          data: {
+            status: 'failed',
+            error: processingError instanceof Error ? processingError.message : 'Unknown processing error'
+          }
+        })
+        throw processingError
+      }
+    }
+
+    // Update other fields (title, status) if provided
+    if (validatedData.title || (validatedData.status && !validatedData.content)) {
+      const finalDoc = await updateDocument(id, req.user.sub, updateData)
+      
+      // Log title-only updates
+      if (validatedData.title && !validatedData.content) {
+        await prisma.usageLog.create({
+          data: {
+            userId: req.user.sub,
+            action: 'document_title_updated',
+            resourceType: 'document',
+            resourceId: id,
+            metadata: JSON.stringify({
+              oldTitle: currentDoc.title,
+              newTitle: validatedData.title
+            })
+          },
+        })
+      }
+    }
+
+    // Get the final updated document
+    const finalDoc = await getDocument(id, req.user.sub)
 
     res.json({
       success: true,
-      data: doc
+      data: finalDoc
     })
   } catch (error: any) {
     if (error.name === 'ZodError') {
