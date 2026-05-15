@@ -80,6 +80,25 @@ The server will start on `http://localhost:5000`
 - **Usage Tracking**: Comprehensive usage analytics
 - **Session Management**: Secure session handling
 
+### 🤖 MCP (Model Control Plane) Service
+- **Budget Enforcement**: Per-user daily budget limits based on tier
+- **Prompt Resolution**: Database-backed prompt templates with versioning
+- **Model Routing**: Intelligent model selection based on task type
+- **Fallback Chains**: Automatic fallback to secondary models on failure
+- **Cost Tracking**: Real-time cost calculation with model-specific pricing
+- **Audit Logging**: Comprehensive AI request audit trail
+- **Confidence Levels**: High/medium/low confidence scoring for chat responses
+- **A/B Testing**: Deterministic user-based prompt testing
+- **Cache Management**: 5-minute prompt cache with instant busting
+
+### 🧠 RAG (Retrieval-Augmented Generation)
+- **Vector Search**: pgvector-based semantic similarity search
+- **Context Assembly**: Token budget management with deduplication
+- **Answer Generation**: OpenAI GPT-4o integration with strict system prompts
+- **Conversation History**: Full context from message history
+- **Source Citation**: References to source documents
+- **Quality Evaluation**: Automated testing frameworks
+
 ## API Endpoints
 
 ### Base URL
@@ -618,7 +637,94 @@ Get all messages in a conversation (requires authentication).
 
 ---
 
-### 6. Admin Routes
+### 6. RAG Routes
+
+#### POST `/api/v1/rag/query`
+Query documents using RAG (Retrieval-Augmented Generation) (requires authentication).
+
+**Request:**
+- Method: `POST`
+- URL: `/api/v1/rag/query`
+- Headers:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer <jwt-token>`
+- Body:
+```json
+{
+  "question": "What is this document about?",
+  "documentId": "document-uuid",
+  "maxChunks": 5
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "answer": "Based on the document, this is about...",
+    "sources": [
+      {
+        "documentId": "document-uuid",
+        "chunkIndex": 1,
+        "content": "Relevant chunk content...",
+        "similarity": 0.95
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "promptVersion": "v1",
+    "tokensUsed": {
+      "prompt": 150,
+      "completion": 200,
+      "total": 350
+    },
+    "costUsd": 0.000123,
+    "latencyMs": 1250,
+    "fallbackUsed": false,
+    "confidenceLevel": "high"
+  }
+}
+```
+
+**Error Responses:**
+- `401` - User not authenticated
+- `400` - Validation error
+- `404` - Document not found
+
+#### GET `/api/v1/rag/documents/:documentId/chunks`
+Get all chunks for a document (requires authentication).
+
+**Request:**
+- Method: `GET`
+- URL: `/api/v1/rag/documents/:documentId/chunks`
+- Headers:
+  - `Authorization: Bearer <jwt-token>`
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "documentId": "document-uuid",
+    "chunks": [
+      {
+        "id": "chunk-uuid",
+        "index": 0,
+        "content": "Chunk content...",
+        "tokenCount": 150
+      }
+    ]
+  }
+}
+```
+
+**Error Responses:**
+- `401` - User not authenticated
+- `404` - Document not found
+
+---
+
+### 8. Admin Routes
 
 #### GET `/api/v1/admin/users`
 Get all users (requires admin authentication).
@@ -707,7 +813,7 @@ Get system statistics (requires admin authentication).
 
 ---
 
-### 7. Webhook Routes
+### 9. Webhook Routes
 
 #### POST `/api/v1/webhooks`
 Handle incoming webhook events.
@@ -750,7 +856,7 @@ Handle incoming webhook events.
 
 ---
 
-### 8. Health Check Routes
+### 10. Health Check Routes
 
 #### GET `/health/live`
 Liveness probe - checks if the server is running.
@@ -805,7 +911,7 @@ Readiness probe - checks if the server is ready to accept requests.
 
 ---
 
-### 9. Monitoring Routes
+### 11. Monitoring Routes
 
 #### GET `/metrics`
 Prometheus metrics endpoint.
@@ -844,7 +950,7 @@ auth_events_total{event_type="login",result="failure"} 150
 - **Runtime**: Node.js
 - **Framework**: Express.js
 - **Language**: TypeScript
-- **Database**: PostgreSQL
+- **Database**: PostgreSQL with pgvector extension
 - **ORM**: Prisma
 - **Authentication**: JWT (JSON Web Tokens)
 - **Caching**: Redis with ioredis
@@ -853,6 +959,8 @@ auth_events_total{event_type="login",result="failure"} 150
 - **Security**: Helmet, CORS, XSS protection
 - **Rate Limiting**: express-rate-limit with Redis
 - **Queue System**: BullMQ
+- **AI/ML**: OpenAI API (GPT-4o, GPT-4o-mini, text-embedding-3-small)
+- **Vector Search**: pgvector with HNSW indexes
 - **Testing**: Jest
 
 ## 📁 Project Structure
@@ -864,6 +972,9 @@ src/
 ├── lib/                   # Utility libraries
 │   ├── cache.ts          # Redis cache configuration
 │   ├── errors.ts         # Custom error classes
+│   ├── http/             # HTTP clients
+│   │   ├── openai.client.ts    # OpenAI HTTP client
+│   │   └── openai.breaker.ts   # Circuit breaker for OpenAI
 │   ├── logger.ts         # Basic logger configuration
 │   ├── metrics.ts        # Prometheus metrics
 │   ├── prisma.ts         # Prisma client setup
@@ -882,13 +993,26 @@ src/
 │   ├── documents.routes.ts # Document endpoints
 │   ├── health.routes.ts  # Health check endpoints
 │   ├── messages.routes.ts # Message endpoints
+│   ├── rag.routes.ts     # RAG endpoints
 │   ├── webhooks.routes.ts # Webhook endpoints
 │   └── welcome.route.ts  # Welcome endpoint
 ├── services/             # Business logic
+│   ├── agent.service.ts  # Agent execution service
 │   ├── auth.services.ts  # Authentication services
-│   └── document.services.ts # Document services
+│   ├── context.service.ts # Context assembly service
+│   ├── document.services.ts # Document services
+│   ├── embedding.service.ts # Embedding generation service
+│   ├── mcp.service.ts    # Model Control Plane service
+│   ├── rag-generation.service.ts # RAG generation service
+│   └── rag.service.ts    # RAG query service
+├── agents/               # AI agents
+│   └── tools/            # Agent tools
+│       └── searchDocuments.ts # Document search tool
+├── config/               # Configuration files
+│   └── prompts.ts        # Prompt templates
 ├── events/               # Event handlers
-│   ├── cache.events.ts  # Cache invalidation events
+│   ├── ai.events.ts      # AI-related events
+│   ├── cache.events.ts   # Cache invalidation events
 │   ├── document.events.ts # Document processing events
 │   └── security.events.ts # Security event tracking
 ├── queues/               # Queue processing
@@ -908,7 +1032,7 @@ The DocuChat RAG (Retrieval-Augmented Generation) system has been comprehensivel
 
 #### Test Coverage
 - **✅ Semantic Search**: pgvector-based similarity search with ownership filtering
-- **✅ Context Assembly**: Token budget management with deduplication  
+- **✅ Context Assembly**: Token budget management with deduplication
 - **✅ RAG Generation**: OpenAI GPT-4o integration with strict system prompts
 - **✅ Conversation Service**: Full pipeline integration with message history
 - **✅ Quality Evaluation**: Automated and manual testing frameworks
@@ -928,9 +1052,24 @@ npm test
 #### Test Results Summary
 - **15/15 questions processed successfully**
 - **Perfect no-context handling** - Correctly identifies missing information
-- **Zero hallucinations** - Never makes up policies or details  
+- **Zero hallucinations** - Never makes up policies or details
 - **Excellent performance** - Average 1.2s per response, $0.0162 total cost
 - **Production ready** - All components working as designed
+
+### MCP Service Testing
+
+The MCP (Model Control Plane) service centralizes all AI calls with a 6-step pipeline.
+
+#### Test Coverage
+- **✅ Budget Enforcement**: Per-user daily budget limits
+- **✅ Prompt Resolution**: Database-backed prompt templates
+- **✅ Model Routing**: Task-based model selection
+- **✅ Fallback Chains**: Automatic model fallback
+- **✅ Cost Calculation**: Model-specific pricing
+- **✅ Audit Logging**: Comprehensive AI request tracking
+- **✅ Confidence Levels**: Chat response scoring
+- **✅ A/B Testing**: Deterministic user-based splits
+- **✅ Cache Busting**: Instant prompt activation
 
 ### Running Tests
 ```bash

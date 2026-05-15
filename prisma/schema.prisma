@@ -262,3 +262,40 @@ model UsageLog {
   @@index([ipAddress])
   @@map("usage_logs")
 }
+
+model PromptTemplate {
+  id        String   @id @default(uuid())
+  taskType  String               // 'chat', 'agent', 'summary'
+  version   String               // 'v1', 'v2', 'v3'
+  name      String               // Human-readable name
+  content   String   @db.Text    // The actual prompt text
+  isActive  Boolean  @default(false)
+  metadata  String?              // JSON: notes, author, changelog
+  createdAt DateTime @default(now())
+
+  @@unique([taskType, version])
+  @@index([taskType, isActive])
+  @@map("prompt_templates")
+}
+
+model AIAuditLog {
+  id             String   @id @default(uuid())
+  userId         String
+  correlationId  String
+  taskType       String
+  model          String
+  promptVersion  String
+  inputTokens    Int
+  outputTokens   Int
+  costUsd        Float
+  latencyMs      Int
+  fallbackUsed   Boolean  @default(false)
+  inputSummary   String   @db.Text   // First 500 chars of the prompt (not full PII)
+  outputSummary  String   @db.Text   // First 500 chars of the response
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([taskType, createdAt])
+  @@index([model, createdAt])
+  @@map("ai_audit_logs")
+}

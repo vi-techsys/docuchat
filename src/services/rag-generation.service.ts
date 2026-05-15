@@ -1,4 +1,4 @@
-import { openaiWithBreaker } from '../lib/http/openai.breaker';
+import { mcpComplete, MCPRequest } from './mcp.service';
 import { RAG_SYSTEM_PROMPT, RAG_NO_CONTEXT_PROMPT } from '../config/prompts';
 import { customLogger } from '../lib/logger';
 import { AssembledContext, Citation } from './context.service';
@@ -32,11 +32,8 @@ export interface RAGGenerationOptions {
   maxTokens?: number;
 }
 
-const CHAT_MODEL = 'gpt-4o';
 const DEFAULT_TEMPERATURE = 0.1; // Low temperature for factual answers
 const DEFAULT_MAX_TOKENS = 1500;
-const GPT_4O_INPUT_COST_PER_1M = 2.50; // $2.50 per 1M input tokens
-const GPT_4O_OUTPUT_COST_PER_1M = 10.00; // $10.00 per 1M output tokens
 
 export async function generateRAGResponse(options: RAGGenerationOptions): Promise<RAGResponse> {
   const {
@@ -54,9 +51,7 @@ export async function generateRAGResponse(options: RAGGenerationOptions): Promis
 
   try {
     // Build the messages array
-    const messages: any[] = [
-      { role: 'system', content: RAG_SYSTEM_PROMPT },
-    ];
+    const messages: any[] = [];
 
     // Add recent conversation history (last 5 exchanges = 10 messages)
     if (conversationHistory && conversationHistory.length > 0) {
@@ -80,7 +75,6 @@ export async function generateRAGResponse(options: RAGGenerationOptions): Promis
       });
     } else {
       // No relevant context found
-      messages[0] = { role: 'system', content: RAG_NO_CONTEXT_PROMPT };
       messages.push({
         role: 'user',
         content: [
@@ -91,69 +85,40 @@ export async function generateRAGResponse(options: RAGGenerationOptions): Promis
       });
     }
 
-    customLogger.info('Generating RAG response', {
+    customLogger.info(`Generating RAG response - correlationId: ${correlationId}, conversationId: ${conversationId}, contextChunks: ${context.chunks.length}, contextTokens: ${context.totalTokens}, hasConversationHistory: ${conversationHistory && conversationHistory.length > 0}, temperature: ${temperature}`);
+
+    // Determine system prompt based on context availability
+    const systemPrompt = context.chunks.length > 0 ? RAG_SYSTEM_PROMPT : RAG_NO_CONTEXT_PROMPT;
+
+    // Call MCP service
+    const mcpRequest: MCPRequest = {
+      taskType: 'chat',
+      messages,
+      userId,
       correlationId,
-      conversationId,
-      model: CHAT_MODEL,
-      contextChunks: context.chunks.length,
-      contextTokens: context.totalTokens,
-      hasConversationHistory: conversationHistory && conversationHistory.length > 0,
-      temperature
-    });
-
-    // Call the LLM through the circuit breaker
-    const response = await openaiWithBreaker.chatCompletion(messages, {
-      model: CHAT_MODEL,
+      systemPrompt,
       temperature,
-      max_tokens: maxTokens,
-    });
+      maxTokens,
+    };
 
-    const result = response.data;
-    const answer = result.choices[0].message.content || '';
-    const usage = result.usage;
+    const mcpResponse = await mcpComplete(mcpRequest);
+
     const duration = Date.now() - startTime;
 
-    // Calculate cost (GPT-4o pricing)
-    const costUsd =
-      (usage.prompt_tokens / 1_000_000) * GPT_4O_INPUT_COST_PER_1M +
-      (usage.completion_tokens / 1_000_000) * GPT_4O_OUTPUT_COST_PER_1M;
-
-    customLogger.info('RAG response generated successfully', {
-      correlationId,
-      conversationId,
-      model: CHAT_MODEL,
-      contextChunks: context.chunks.length,
-      promptTokens: usage.prompt_tokens,
-      completionTokens: usage.completion_tokens,
-      totalTokens: usage.total_tokens,
-      costUsd: costUsd.toFixed(6),
-      durationMs: duration,
-      answerLength: answer.length
-    });
+    customLogger.info(`RAG response generated successfully - correlationId: ${correlationId}, conversationId: ${conversationId}, model: ${mcpResponse.model}, promptVersion: ${mcpResponse.promptVersion}, contextChunks: ${context.chunks.length}, promptTokens: ${mcpResponse.tokensUsed.prompt}, completionTokens: ${mcpResponse.tokensUsed.completion}, totalTokens: ${mcpResponse.tokensUsed.total}, costUsd: ${mcpResponse.costUsd.toFixed(6)}, durationMs: ${duration}, answerLength: ${mcpResponse.content.length}, fallbackUsed: ${mcpResponse.fallbackUsed}`);
 
     return {
-      answer,
+      answer: mcpResponse.content,
       citations: context.citations,
-      tokensUsed: {
-        prompt: usage.prompt_tokens,
-        completion: usage.completion_tokens,
-        total: usage.total_tokens,
-      },
-      costUsd,
-      model: CHAT_MODEL,
+      tokensUsed: mcpResponse.tokensUsed,
+      costUsd: mcpResponse.costUsd,
+      model: mcpResponse.model,
       processingTime: duration
     };
 
   } catch (error) {
     const duration = Date.now() - startTime;
-    customLogger.error('RAG response generation failed', {
-      correlationId,
-      conversationId,
-      model: CHAT_MODEL,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      durationMs: duration,
-      contextChunks: context.chunks.length
-    });
+    customLogger.error(`RAG response generation failed - correlationId: ${correlationId}, conversationId: ${conversationId}, error: ${error instanceof Error ? error.message : 'Unknown error'}, durationMs: ${duration}, contextChunks: ${context.chunks.length}`);
 
     // Return a fallback response
     return {
@@ -161,7 +126,7 @@ export async function generateRAGResponse(options: RAGGenerationOptions): Promis
       citations: [],
       tokensUsed: { prompt: 0, completion: 0, total: 0 },
       costUsd: 0,
-      model: CHAT_MODEL,
+      model: 'unknown',
       processingTime: duration
     };
   }
@@ -169,7 +134,8 @@ export async function generateRAGResponse(options: RAGGenerationOptions): Promis
 
 export async function generateConversationSummary(
   conversationHistory: ConversationMessage[],
-  correlationId: string = 'unknown'
+  correlationId: string = 'unknown',
+  userId: string = 'system'
 ): Promise<string> {
   const startTime = Date.now();
 
@@ -178,40 +144,33 @@ export async function generateConversationSummary(
       .map(msg => `${msg.role}: ${msg.content}`)
       .join('\n');
 
-    const response = await openaiWithBreaker.chatCompletion([
-      {
-        role: 'system',
-        content: 'You are a helpful assistant that summarizes conversations concisely.'
-      },
-      {
-        role: 'user',
-        content: `Summarize the following conversation in 2-3 sentences, focusing on the main topics and questions discussed:\n\n${conversationText}\n\nSummary:`
-      }
-    ], {
-      model: CHAT_MODEL,
+    // Call MCP service
+    const mcpRequest: MCPRequest = {
+      taskType: 'summary',
+      messages: [
+        {
+          role: 'user',
+          content: `Summarize the following conversation in 2-3 sentences, focusing on the main topics and questions discussed:\n\n${conversationText}\n\nSummary:`
+        }
+      ],
+      userId,
+      correlationId,
       temperature: 0.3,
-      max_tokens: 150
-    });
+      maxTokens: 150,
+    };
 
-    const summary = response.data.choices[0].message.content || '';
+    const mcpResponse = await mcpComplete(mcpRequest);
+
+    const summary = mcpResponse.content;
     const duration = Date.now() - startTime;
 
-    customLogger.info('Conversation summary generated', {
-      correlationId,
-      conversationLength: conversationHistory.length,
-      summaryLength: summary.length,
-      durationMs: duration
-    });
+    customLogger.info(`Conversation summary generated - correlationId: ${correlationId}, conversationLength: ${conversationHistory.length}, summaryLength: ${summary.length}, durationMs: ${duration}, model: ${mcpResponse.model}, promptVersion: ${mcpResponse.promptVersion}`);
 
     return summary;
 
   } catch (error) {
     const duration = Date.now() - startTime;
-    customLogger.error('Conversation summary generation failed', {
-      correlationId,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      durationMs: duration
-    });
+    customLogger.error(`Conversation summary generation failed - correlationId: ${correlationId}, error: ${error instanceof Error ? error.message : 'Unknown error'}, durationMs: ${duration}`);
 
     return 'Conversation summary unavailable.';
   }

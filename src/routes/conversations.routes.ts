@@ -2,6 +2,7 @@
 import { Router } from "express"
 import type { Request, Response } from "express"
 import { authenticate } from "../middleware/auths"
+import { tieredApiLimiter } from "../middleware/rateLimit.middleware"
 import { prisma } from "../lib/prisma"
 import { 
   createConversation, 
@@ -20,6 +21,9 @@ import {
 } from "../validators/conversation.validators"
 
 const router = Router()
+
+// Apply rate limiting to all conversation routes
+router.use(tieredApiLimiter)
 
 // POST /api/v1/conversations - Create a new conversation
 router.post("/", authenticate, async (req: Request, res: Response) => {
@@ -57,7 +61,7 @@ router.get("/", authenticate, async (req: Request, res: Response) => {
   }
 
   try {
-    const validatedQuery = listConversationsSchema.parse(req.query)
+    const validatedQuery = listConversationsSchema.parse((req as any).sanitizedQuery || req.query)
     const result = await listConversations({
       ...validatedQuery,
       userId: req.user.sub
@@ -90,7 +94,7 @@ router.get("/:id", authenticate, async (req: Request, res: Response) => {
   }
 
   try {
-    const { id } = conversationIdSchema.parse(req.params)
+    const { id } = conversationIdSchema.parse((req as any).sanitizedParams || req.params)
     const conversation = await getConversation(id, req.user.sub)
 
     if (!conversation) {
@@ -129,7 +133,7 @@ router.put("/:id", authenticate, async (req: Request, res: Response) => {
   }
 
   try {
-    const { id } = conversationIdSchema.parse(req.params)
+    const { id } = conversationIdSchema.parse((req as any).sanitizedParams || req.params)
     const validatedData = updateConversationSchema.parse(req.body)
     
     const conversation = await updateConversation(id, req.user.sub, validatedData)
@@ -160,7 +164,7 @@ router.delete("/:id", authenticate, async (req: Request, res: Response) => {
   }
 
   try {
-    const { id } = conversationIdSchema.parse(req.params)
+    const { id } = conversationIdSchema.parse((req as any).sanitizedParams || req.params)
     await deleteConversation(id, req.user.sub)
 
     res.json({
@@ -189,7 +193,7 @@ router.post("/:id/messages", authenticate, async (req: Request, res: Response) =
   }
 
   try {
-    const { id } = conversationIdSchema.parse(req.params)
+    const { id } = conversationIdSchema.parse((req as any).sanitizedParams || req.params)
     const { message } = sendMessageSchema.parse(req.body)
     
     // Get conversation to extract documentId

@@ -17,8 +17,7 @@ export interface CircuitBreakerState {
   stats: {
     failures: number;
     fires: number;
-    lastFailure?: Date;
-    lastSuccess?: Date;
+    successes: number;
   };
 }
 
@@ -41,10 +40,10 @@ const DEFAULT_CIRCUIT_BREAKER_OPTIONS: Required<CircuitBreakerOptions> = {
 export function createOpenAICircuitBreaker<T = any>(
   apiCall: () => Promise<T>,
   options: CircuitBreakerOptions = {}
-): CircuitBreaker & { 
+): CircuitBreaker<[], T> & { 
   execute: () => Promise<T>;
   getState: () => CircuitBreakerState;
-  getStats: () => any;
+  getStats: () => CircuitBreaker.Stats;
 } {
   const opts = { ...DEFAULT_CIRCUIT_BREAKER_OPTIONS, ...options };
   
@@ -70,7 +69,7 @@ export function createOpenAICircuitBreaker<T = any>(
     console.log('📊 Stats:', breaker.stats);
   });
 
-  breaker.on('fallback', (err: Error) => {
+  breaker.on('fallback', (result: unknown, err: Error) => {
     console.error('🚨 Circuit breaker FALLBACK triggered:', err.message);
   });
 
@@ -113,22 +112,26 @@ export function createOpenAICircuitBreaker<T = any>(
   };
 
   // Return enhanced breaker
-  return {
-    ...breaker,
-    execute: enhancedExecute,
-    getState: (): CircuitBreakerState => ({
-      open: breaker.opened,
-      closed: !breaker.opened && !breaker.halfOpen,
-      halfOpen: breaker.halfOpen,
-      stats: {
-        failures: breaker.stats.failures,
-        fires: breaker.stats.fires,
-        lastFailure: breaker.stats.lastFailureTime,
-        lastSuccess: breaker.stats.lastSuccessTime,
-      },
-    }),
-    getStats: () => breaker.stats,
+  const enhancedBreaker = breaker as CircuitBreaker<[], T> & { 
+    execute: () => Promise<T>;
+    getState: () => CircuitBreakerState;
+    getStats: () => CircuitBreaker.Stats;
   };
+  
+  enhancedBreaker.execute = enhancedExecute;
+  enhancedBreaker.getState = (): CircuitBreakerState => ({
+    open: breaker.opened,
+    closed: !breaker.opened && !breaker.halfOpen,
+    halfOpen: breaker.halfOpen,
+    stats: {
+      failures: breaker.stats.failures,
+      fires: breaker.stats.fires,
+      successes: breaker.stats.successes,
+    },
+  });
+  enhancedBreaker.getStats = () => breaker.stats;
+  
+  return enhancedBreaker;
 }
 
 /**

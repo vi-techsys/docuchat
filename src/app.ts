@@ -14,10 +14,13 @@ import agentRoutes from "./routes/agent.routes"
 import { errorHandler } from "./middleware/errorHandler"
 import { logger, customLogger } from "./lib/logger"
 import { metricsHandler } from "./lib/metrics"
-import { corsConfig } from "./middleware/security.middleware"
+import { corsConfig, helmetMiddleware, sanitizeInput } from "./middleware/security.middleware"
 
 // Import event listeners
 import "./events/ingestion.events"
+
+// Import and initialize queue workers
+import "./queues/document-processing.worker"
 
 dotenv.config()
 
@@ -25,10 +28,16 @@ const app = express()
 
 customLogger.info("Server starting...")
 
+// Security middleware (must be early)
+app.use(helmetMiddleware)
+
 // Basic middleware
 app.use(cors(corsConfig))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
+
+// Input sanitization
+app.use(sanitizeInput)
 
 // Request logging
 app.use((req, res, next) => {

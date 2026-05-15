@@ -3,9 +3,13 @@ import type { Request, Response } from "express"
 import { register, login, logout, refreshToken } from "../services/auth.services"
 import { authenticate } from "../middleware/auths"
 import { noCache } from "../middleware/cache.middleware"
+import { authLimiter } from "../middleware/rateLimit.middleware"
 import { prisma } from "../lib/prisma"
 
 const router = Router()
+
+// Apply rate limiting to all auth endpoints
+router.use(authLimiter)
 
 // Apply no-cache to all auth routes
 router.use(noCache())

@@ -1,7 +1,5 @@
 import rateLimit from 'express-rate-limit';
-import RedisStore from 'rate-limit-redis';
 import { Request } from 'express';
-import { cacheRedis } from '../lib/cache';
 
 // User tiers for rate limiting
 export type UserTier = 'free' | 'pro' | 'enterprise';
@@ -49,10 +47,6 @@ function createLimiter(options: {
   keyGenerator?: (req: Request) => string;
 }) {
   return rateLimit({
-    store: new RedisStore({
-      sendCommand: (...args: string[]) => cacheRedis.call(...args),
-      prefix: `docuchat:rl:${options.keyPrefix || 'default'}`,
-    }),
     windowMs: options.windowMs,
     max: options.max,
     message: {
@@ -62,6 +56,8 @@ function createLimiter(options: {
     },
     standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
     legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+    skipFailedRequests: true, // Don't count failed requests against the limit
+    skipSuccessfulRequests: false, // Count successful requests
     keyGenerator: options.keyGenerator || ((req: Request) => {
       // Use user ID for authenticated requests, IP for anonymous
       const user = (req as any).user;

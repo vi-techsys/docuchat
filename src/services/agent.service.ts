@@ -1,4 +1,4 @@
-import { openaiWithBreaker } from '../lib/http/openai.breaker';
+import { mcpComplete, MCPRequest } from './mcp.service';
 import { customLogger } from '../lib/logger';
 import { TOOL_REGISTRY, getToolSchemas } from '../agents/tools/registry';
 import { ToolContext } from '../agents/tools/index';
@@ -34,36 +34,10 @@ export async function runAgent(request: AgentRequest): Promise<AgentResponse> {
   const { correlationId = 'unknown' } = request;
 
   try {
-    customLogger.info('Starting agent execution', {
-      correlationId,
-      userId: request.userId,
-      question: request.question.substring(0, 100),
-      documentId: request.documentId
-    });
+    customLogger.info(`Starting agent execution - correlationId: ${correlationId}, userId: ${request.userId}, question: ${request.question.substring(0, 100)}, documentId: ${request.documentId}`);
 
     // Prepare messages for agent
     const messages = [
-      {
-        role: 'system' as const,
-        content: `You are DocuChat Agent, an AI assistant that helps users find information in their documents.
-
-You have access to the following tools:
-1. search_documents - Search for relevant information in user's documents
-2. final_answer - Provide the final answer when you have enough information
-
-Your task is to:
-1. Understand the user's question
-2. Use search_documents to find relevant information
-3. Analyze the search results
-4. Provide a comprehensive answer using final_answer
-
-Important guidelines:
-- Always search for information before answering
-- If no relevant information is found, say so clearly
-- Cite your sources properly
-- Be helpful and accurate
-- Use multiple searches if needed for complex questions`
-      },
       ...(request.conversationHistory || []),
       {
         role: 'user' as const,
@@ -72,19 +46,23 @@ Important guidelines:
     ];
 
     // First attempt with tools
-    const response = await openaiWithBreaker.chatCompletion(
+    const mcpRequest: MCPRequest = {
+      taskType: 'agent',
       messages,
-      {
-        tools: getToolSchemas(),
-        tool_choice: 'auto',
-        model: 'gpt-4o',
-        temperature: 0.1,
-        max_tokens: 1500,
-      }
-    );
+      userId: request.userId,
+      correlationId,
+      tools: getToolSchemas(),
+      temperature: 0.1,
+      maxTokens: 1500,
+    };
 
-    const assistantMessage = response.data.choices[0].message;
-    const toolCalls = assistantMessage.tool_calls || [];
+    const response = await mcpComplete(mcpRequest);
+
+    const assistantMessage = {
+      content: response.content,
+      tool_calls: response.toolCalls,
+    };
+    const toolCalls = response.toolCalls || [];
     const toolResults: Array<{ name: string; parameters: any; result: any }> = [];
 
     // Execute tool calls
@@ -93,11 +71,7 @@ Important guidelines:
       const tool = TOOL_REGISTRY[toolName];
 
       if (!tool) {
-        customLogger.warn('Unknown tool called', {
-          correlationId,
-          toolName,
-          availableTools: Object.keys(TOOL_REGISTRY)
-        });
+        customLogger.warn(`Unknown tool called - correlationId: ${correlationId}, toolName: ${toolName}, availableTools: ${Object.keys(TOOL_REGISTRY).join(', ')}`);
         continue;
       }
 
@@ -108,11 +82,7 @@ Important guidelines:
           correlationId: `${correlationId}-${toolName}`
         };
 
-        customLogger.info('Executing tool', {
-          correlationId: toolContext.correlationId,
-          toolName,
-          parameters
-        });
+        customLogger.info(`Executing tool - correlationId: ${toolContext.correlationId}, toolName: ${toolName}, parameters: ${JSON.stringify(parameters)}`);
 
         const result = await tool.handler(parameters, toolContext);
         
@@ -122,19 +92,11 @@ Important guidelines:
           result: result.success ? result.data : { error: 'Tool execution failed' }
         });
 
-        customLogger.info('Tool executed successfully', {
-          correlationId: toolContext.correlationId,
-          toolName,
-          success: result.success
-        });
+        customLogger.info(`Tool executed successfully - correlationId: ${toolContext.correlationId}, toolName: ${toolName}, success: ${result.success}`);
 
       } catch (error) {
         const parsedArgs = JSON.parse(toolCall.function.arguments);
-        customLogger.error('Tool execution failed', {
-          correlationId: `${correlationId}-${toolName}`,
-          toolName,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
+        customLogger.error(`Tool execution failed - correlationId: ${correlationId}-${toolName}, toolName: ${toolName}, error: ${error instanceof Error ? error.message : 'Unknown error'}`);
 
         toolResults.push({
           name: toolName,
@@ -161,25 +123,30 @@ Important guidelines:
         }))
       ];
 
-      const finalResponse = await openaiWithBreaker.chatCompletion(
-        messagesWithTools,
-        {
-          model: 'gpt-4o',
-          temperature: 0.1,
-          max_tokens: 1500,
-        }
-      );
+      const finalMcpRequest: MCPRequest = {
+        taskType: 'agent',
+        messages: messagesWithTools,
+        userId: request.userId,
+        correlationId: `${correlationId}-final`,
+        temperature: 0.1,
+        maxTokens: 1500,
+      };
 
-      finalAnswer = finalResponse.data.choices[0].message.content || '';
+      const finalResponse = await mcpComplete(finalMcpRequest);
+
+      finalAnswer = finalResponse.content;
 
       // Extract sources from search results
       const searchResult = toolResults.find((tr: any) => tr.name === 'search_documents');
       if (searchResult?.result?.results) {
-        sources = [...new Set(searchResult.result.results.map((r: any) => r.document as string))];
+        const sourceDocs = searchResult.result.results
+          .map((r: any) => r.document as string)
+          .filter((s: string) => typeof s === 'string') as string[];
+        sources = [...new Set(sourceDocs)];
       }
 
       // Determine confidence based on search results
-      if (searchResult?.result?.totalResults > 0) {
+      if (searchResult?.result?.totalResults && searchResult.result.totalResults > 0) {
         const firstResult = searchResult.result.results[0];
         confidence = firstResult.score > 0.8 ? 'high' : 
                    firstResult.score > 0.5 ? 'medium' : 'low';
@@ -189,20 +156,14 @@ Important guidelines:
 
     } else {
       // No tools were called, provide direct response
-      finalAnswer = assistantMessage.content || 'I need to search your documents to answer that question.';
+      finalAnswer = response.content || 'I need to search your documents to answer that question.';
     }
 
     const processingTime = Date.now() - startTime;
-    const usage = response.data.usage;
+    const totalTokensUsed = response.tokensUsed.total + (toolResults.length > 0 ? response.tokensUsed.total : 0);
+    const totalCost = response.costUsd + (toolResults.length > 0 ? response.costUsd : 0);
 
-    customLogger.info('Agent execution completed', {
-      correlationId,
-      processingTime,
-      toolCallsCount: toolCalls.length,
-      toolResultsCount: toolResults.length,
-      sourcesCount: sources.length,
-      confidence
-    });
+    customLogger.info(`Agent execution completed - correlationId: ${correlationId}, processingTime: ${processingTime}, toolCallsCount: ${toolCalls.length}, toolResultsCount: ${toolResults.length}, sourcesCount: ${sources.length}, confidence: ${confidence}, model: ${response.model}, promptVersion: ${response.promptVersion}, fallbackUsed: ${response.fallbackUsed}`);
 
     return {
       answer: finalAnswer,
@@ -210,22 +171,18 @@ Important guidelines:
       sources,
       confidence,
       tokensUsed: {
-        input: usage?.prompt_tokens || 0,
-        output: usage?.completion_tokens || 0,
-        total: usage?.total_tokens || 0
+        input: response.tokensUsed.prompt,
+        output: response.tokensUsed.completion,
+        total: totalTokensUsed
       },
-      costUsd: (usage?.total_tokens || 0) * 0.0000025, // GPT-4o rate
+      costUsd: totalCost,
       processingTime
     };
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
     
-    customLogger.error('Agent execution failed', {
-      correlationId,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      processingTime
-    });
+    customLogger.error(`Agent execution failed - correlationId: ${correlationId}, error: ${error instanceof Error ? error.message : 'Unknown error'}, processingTime: ${processingTime}`);
 
     throw error;
   }

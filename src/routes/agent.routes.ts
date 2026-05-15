@@ -2,6 +2,7 @@
 import { Router } from "express"
 import type { Request, Response, NextFunction } from "express"
 import { authenticate } from "../middleware/auths"
+import { tieredApiLimiter } from "../middleware/rateLimit.middleware"
 import { prisma } from "../lib/prisma"
 import { runAgent } from "../agents/executor"
 import { z } from 'zod'
@@ -16,7 +17,7 @@ const agentRequestSchema = z.object({
 })
 
 // POST /api/v1/agent/chat - Run agent with tools
-router.post("/chat", authenticate, async (req: Request, res: Response, next: NextFunction) => {
+router.post("/chat", tieredApiLimiter, authenticate, async (req: Request, res: Response, next: NextFunction) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }

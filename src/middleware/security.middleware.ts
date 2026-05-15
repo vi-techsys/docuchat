@@ -91,17 +91,17 @@ export const sanitizeInput = (req: Request, res: Response, next: NextFunction) =
   if (req.body) {
     req.body = sanitizeObject(req.body);
   }
-  
-  // Sanitize query parameters
+
+  // Sanitize query parameters (store in custom property since req.query is read-only in Express 5)
   if (req.query) {
-    req.query = sanitizeObject(req.query);
+    (req as any).sanitizedQuery = sanitizeObject(req.query);
   }
-  
-  // Sanitize URL parameters
+
+  // Sanitize URL parameters (store in custom property since req.params is read-only in Express 5)
   if (req.params) {
-    req.params = sanitizeObject(req.params);
+    (req as any).sanitizedParams = sanitizeObject(req.params);
   }
-  
+
   next();
 };
 

@@ -7,6 +7,7 @@ export interface RAGQuery {
   userId: string;
   documentId?: string;
   maxChunks?: number; // Default: 5
+  correlationId?: string;
 }
 
 export interface RAGResult {
@@ -34,16 +35,14 @@ export class RAGService {
     const maxChunks = query.maxChunks || this.DEFAULT_MAX_CHUNKS;
 
     try {
-      customLogger.info(`RAG query initiated`, {
-        userId: query.userId,
-        documentId: query.documentId,
-        question: query.question.substring(0, 100) + (query.question.length > 100 ? '...' : '')
-      });
+      customLogger.info(`RAG query initiated - userId: ${query.userId}, documentId: ${query.documentId}, question: ${query.question.substring(0, 100) + (query.question.length > 100 ? '...' : '')}`);
 
       // 1. Generate embedding for the question
       const questionEmbedding = await generateEmbeddingCached(
         query.question,
-        query.userId
+        query.userId,
+        undefined,
+        `rag-${query.correlationId || 'unknown'}`
       );
 
       // 2. Search for similar chunks using vector similarity
@@ -77,12 +76,7 @@ export class RAGService {
 
       const processingTime = Date.now() - startTime;
 
-      customLogger.info(`RAG query completed`, {
-        userId: query.userId,
-        chunksRetrieved: similarChunks.length,
-        processingTime,
-        answerLength: answer.length
-      });
+      customLogger.info(`RAG query completed - userId: ${query.userId}, chunksRetrieved: ${similarChunks.length}, processingTime: ${processingTime}, answerLength: ${answer.length}`);
 
       return {
         answer,
@@ -101,10 +95,7 @@ export class RAGService {
       };
 
     } catch (error) {
-      customLogger.error(`RAG query failed`, {
-        userId: query.userId,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
+      customLogger.error(`RAG query failed - userId: ${query.userId}, error: ${error instanceof Error ? error.message : 'Unknown error'}`);
 
       return {
         answer: 'Sorry, I encountered an error while processing your question.',
@@ -152,7 +143,7 @@ export class RAGService {
       LIMIT ${limit}
     `;
 
-    const results = await prisma.$queryRawUnsafe(query);
+    const results = await prisma.$queryRawUnsafe(query) as any[];
 
     return results.map((row: any) => ({
       id: row.id,
@@ -244,7 +235,7 @@ export class RAGService {
       HAVING MAX(1 - (c.embedding <=> ${vectorStr}::vector)) > 0.3
       ORDER BY similarity DESC
       LIMIT ${limit}
-    `);
+    `) as any[];
 
     return results.map((row: any) => ({
       documentId: row.documentid,

@@ -1,11 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { RAGService } from '../services/rag.service';
 import { authenticate } from '../middleware/auths';
+import { tieredApiLimiter } from '../middleware/rateLimit.middleware';
 import { generateEmbeddingCached } from '../services/embedding.service';
 
 const router = Router();
 
-// Apply authentication to all routes
+// Apply rate limiting and authentication to all routes
+router.use(tieredApiLimiter);
 router.use(authenticate);
 
 // POST /api/v1/rag/query - Query documents using RAG

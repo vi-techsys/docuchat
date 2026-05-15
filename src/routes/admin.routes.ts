@@ -4,10 +4,12 @@ import { authenticate } from '../middleware/auths';
 import { updateUserRole } from '../services/auth.services';
 import { getUserPermissions } from '../services/auth.services';
 import { noCache } from '../middleware/cache.middleware';
+import { tieredApiLimiter } from '../middleware/rateLimit.middleware';
 
 const router = Router();
 
-// Apply authentication and no-cache to all admin routes
+// Apply rate limiting, authentication and no-cache to all admin routes
+router.use(tieredApiLimiter);
 router.use(authenticate);
 router.use(noCache());
 
@@ -28,7 +30,7 @@ const requireAdmin = (req: Request, res: Response, next: any) => {
 // PUT /api/v1/admin/users/:userId/role - Update user role
 router.put('/users/:userId/role', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { userId } = req.params;
+    const { userId } = (req as any).sanitizedParams || req.params;
     const { role } = req.body;
     
     if (!role || !['user', 'moderator', 'admin'].includes(role)) {
@@ -66,7 +68,7 @@ router.put('/users/:userId/role', requireAdmin, async (req: Request, res: Respon
 // GET /api/v1/admin/users/:userId/permissions - Get user permissions (for testing cache)
 router.get('/users/:userId/permissions', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { userId } = req.params;
+    const { userId } = (req as any).sanitizedParams || req.params;
     
     const permissions = await getUserPermissions(userId as string);
     

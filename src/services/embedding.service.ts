@@ -1,4 +1,4 @@
-import { openaiWithBreaker } from '../lib/http/openai.breaker';
+import { mcpComplete, MCPRequest } from './mcp.service';
 import { customLogger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { cacheGet, cacheSet, CACHE_TTL } from '../lib/cache';
@@ -15,26 +15,34 @@ function contentHash(text: string): string {
 }
 
 export async function generateEmbedding(
-  text: string
+  text: string,
+  userId: string = 'system',
+  correlationId: string = 'unknown'
 ): Promise<number[]> {
   const startTime = Date.now();
 
-  const response = await openaiWithBreaker.embeddings([text], {
-    model: EMBEDDING_MODEL,
-  });
+  const mcpRequest: MCPRequest = {
+    taskType: 'embedding',
+    messages: [{ role: 'user', content: text }],
+    userId,
+    correlationId,
+  };
 
-  const embedding = response.data.data[0].embedding;
+  const response = await mcpComplete(mcpRequest);
+
+  const embedding = JSON.parse(response.content);
   const duration = Date.now() - startTime;
 
-  customLogger.info(`Embedding generated: model=${EMBEDDING_MODEL}, inputLength=${text.length}, dimensions=${embedding.length}, durationMs=${duration}, tokensUsed=${response.data.usage?.total_tokens}`);
+  customLogger.info(`Embedding generated: model=${response.model}, promptVersion=${response.promptVersion}, inputLength=${text.length}, dimensions=${embedding.length}, durationMs=${duration}, tokensUsed=${response.tokensUsed.total}, costUsd=${response.costUsd.toFixed(6)}`);
 
   return embedding;
 }
 
 export async function generateEmbeddingCached(
   text: string,
-  userId?: string,
-  documentId?: string
+  userId: string = 'system',
+  documentId?: string,
+  correlationId: string = 'unknown'
 ): Promise<number[]> {
   const hash = contentHash(text);
   const cacheKey = `embed:${hash}`;
@@ -42,7 +50,7 @@ export async function generateEmbeddingCached(
   // Check cache
   const cached = await cacheGet(cacheKey);
   if (cached) {
-    customLogger.info(`Embedding cache hit: ${hash.substring(0, 12)}`);
+    customLogger.info(`Embedding cache hit - hash: ${hash.substring(0, 12)}`);
     
     // Emit cached event for tracking
     if (userId) {
@@ -60,20 +68,25 @@ export async function generateEmbeddingCached(
   }
 
   // Cache miss — generate
-  const response = await openaiWithBreaker.embeddings([text], {
-    model: EMBEDDING_MODEL,
-  });
+  const mcpRequest: MCPRequest = {
+    taskType: 'embedding',
+    messages: [{ role: 'user', content: text }],
+    userId,
+    correlationId,
+  };
 
-  const embedding = response.data.data[0].embedding;
-  const tokensUsed = response.data.usage?.total_tokens || 0;
-  const costUsd = (tokensUsed / 1_000_000) * COST_PER_1M_TOKENS;
+  const response = await mcpComplete(mcpRequest);
+
+  const embedding = JSON.parse(response.content);
+  const tokensUsed = response.tokensUsed.total;
+  const costUsd = response.costUsd;
 
   // Emit event for cost tracking
   if (userId) {
     emitEmbeddingGenerated({
       userId,
       documentId,
-      model: EMBEDDING_MODEL,
+      model: response.model,
       tokensUsed,
       costUsd,
       cached: false,
@@ -83,12 +96,14 @@ export async function generateEmbeddingCached(
   // Cache for 7 days (embeddings don't change for the same input)
   await cacheSet(cacheKey, embedding, CACHE_TTL.EMBEDDING);
 
-  customLogger.info(`Embedding cached: ${hash.substring(0, 12)}`);
+  customLogger.info(`Embedding cached: ${hash.substring(0, 12)}, model=${response.model}, costUsd=${costUsd.toFixed(6)}`);
   return embedding;
 }
 
 export async function generateEmbeddings(
-  texts: string[]
+  texts: string[],
+  userId: string = 'system',
+  correlationId: string = 'unknown'
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
 
@@ -97,19 +112,21 @@ export async function generateEmbeddings(
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
 
-    const response = await openaiWithBreaker.embeddings(batch, {
-      model: EMBEDDING_MODEL,
-    });
+    // Process each text individually through MCP
+    for (const text of batch) {
+      const mcpRequest: MCPRequest = {
+        taskType: 'embedding',
+        messages: [{ role: 'user', content: text }],
+        userId,
+        correlationId: `${correlationId}-${i}`,
+      };
 
-    // Sort by index to maintain order
-    const sorted = response.data.data
-      .sort((a: any, b: any) => a.index - b.index);
-
-    for (const item of sorted) {
-      allEmbeddings.push(item.embedding);
+      const response = await mcpComplete(mcpRequest);
+      const embedding = JSON.parse(response.content);
+      allEmbeddings.push(embedding);
     }
 
-    customLogger.info(`Embedding batch processed: batchIndex=${Math.floor(i / BATCH_SIZE)}, batchSize=${batch.length}, totalTexts=${texts.length}, tokensUsed=${response.data.usage?.total_tokens}`);
+    customLogger.info(`Embedding batch processed - batchIndex: ${Math.floor(i / BATCH_SIZE)}, batchSize: ${batch.length}, totalTexts: ${texts.length}`);
   }
 
   return allEmbeddings;
@@ -117,8 +134,9 @@ export async function generateEmbeddings(
 
 export async function generateEmbeddingsBatchCached(
   texts: string[],
-  userId?: string,
-  documentId?: string
+  userId: string = 'system',
+  documentId?: string,
+  correlationId: string = 'unknown'
 ): Promise<number[][]> {
   const results: (number[] | null)[] = new Array(texts.length).fill(null);
   const uncached: { index: number; text: string }[] = [];
@@ -134,41 +152,43 @@ export async function generateEmbeddingsBatchCached(
     }
   }
 
-  customLogger.info(`Embedding batch cache check: total=${texts.length}, cacheHits=${texts.length - uncached.length}, cacheMisses=${uncached.length}`);
+  customLogger.info(`Embedding batch cache check - total: ${texts.length}, cacheHits: ${texts.length - uncached.length}, cacheMisses: ${uncached.length}`);
 
   // 2. Generate embeddings only for uncached texts
   if (uncached.length > 0) {
-    const response = await openaiWithBreaker.embeddings(
-      uncached.map(u => u.text),
-      { model: EMBEDDING_MODEL }
-    );
+    let totalTokensUsed = 0;
+    let totalCostUsd = 0;
 
-    const tokensUsed = response.data.usage?.total_tokens || 0;
-    const costUsd = (tokensUsed / 1_000_000) * COST_PER_1M_TOKENS;
+    // Process each uncached text through MCP
+    for (let i = 0; i < uncached.length; i++) {
+      const mcpRequest: MCPRequest = {
+        taskType: 'embedding',
+        messages: [{ role: 'user', content: uncached[i].text }],
+        userId,
+        correlationId: `${correlationId}-${i}`,
+      };
+
+      const response = await mcpComplete(mcpRequest);
+      const embedding = JSON.parse(response.content);
+      
+      const hash = contentHash(uncached[i].text);
+      await cacheSet(`embed:${hash}`, embedding, CACHE_TTL.EMBEDDING);
+      results[uncached[i].index] = embedding;
+
+      totalTokensUsed += response.tokensUsed.total;
+      totalCostUsd += response.costUsd;
+    }
 
     // Emit event for cost tracking
     if (userId) {
       emitEmbeddingGenerated({
         userId,
         documentId,
-        model: EMBEDDING_MODEL,
-        tokensUsed,
-        costUsd,
+        model: 'text-embedding-3-small',
+        tokensUsed: totalTokensUsed,
+        costUsd: totalCostUsd,
         cached: false,
       });
-    }
-
-    // Sort by index to maintain order
-    const sorted = response.data.data
-      .sort((a: any, b: any) => a.index - b.index);
-
-    // 3. Cache the new embeddings and fill in results
-    for (let i = 0; i < uncached.length; i++) {
-      const hash = contentHash(uncached[i].text);
-      const embedding = sorted[i].embedding;
-      
-      await cacheSet(`embed:${hash}`, embedding, CACHE_TTL.EMBEDDING);
-      results[uncached[i].index] = embedding;
     }
   }
 
@@ -206,14 +226,15 @@ export async function storeChunkEmbeddingsBatch(
 
 export async function generateAndStoreEmbeddings(
   chunks: { id: string; content: string }[],
-  userId?: string,
-  documentId?: string
+  userId: string = 'system',
+  documentId?: string,
+  correlationId: string = 'unknown'
 ): Promise<{ cost: number; tokensUsed: number }> {
   // Extract texts for batch processing
   const texts = chunks.map(chunk => chunk.content);
   
   // Generate embeddings in batch with caching
-  const embeddings = await generateEmbeddingsBatchCached(texts, userId, documentId);
+  const embeddings = await generateEmbeddingsBatchCached(texts, userId, documentId, correlationId);
   
   // Prepare data for storage
   const chunkEmbeddings = chunks.map((chunk, index) => ({
@@ -228,7 +249,7 @@ export async function generateAndStoreEmbeddings(
   const totalTokens = chunks.reduce((sum, chunk) => sum + Math.ceil(chunk.content.length / 4), 0);
   const totalCost = (totalTokens / 1_000_000) * COST_PER_1M_TOKENS;
   
-  customLogger.info(`Embeddings generated and stored: chunkCount=${chunks.length}, model=${EMBEDDING_MODEL}, dimensions=${EMBEDDING_DIMENSIONS}, cost=$${totalCost.toFixed(6)}`);
+  customLogger.info(`Embeddings generated and stored - chunkCount: ${chunks.length}, model: ${EMBEDDING_MODEL}, dimensions: ${EMBEDDING_DIMENSIONS}, cost: $${totalCost.toFixed(6)}`);
   
   return { cost: totalCost, tokensUsed: totalTokens };
 }

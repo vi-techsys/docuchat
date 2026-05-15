@@ -2,6 +2,7 @@
 import { Router } from "express"
 import type { Request, Response } from "express"
 import { authenticate } from "../middleware/auths"
+import { tieredChatLimiter } from "../middleware/rateLimit.middleware"
 import { 
   createMessage, 
   getMessages, 
@@ -12,13 +13,13 @@ import {
 
 const router = Router()
 
-// POST /api/v1/conversations/:conversationId/messages - Create a new message
-router.post("/:conversationId/messages", authenticate, async (req: Request, res: Response) => {
+// Apply chat rate limiting to all message creation endpoints
+router.post("/:conversationId/messages", authenticate, tieredChatLimiter, async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }
 
-  const { conversationId } = req.params
+  const { conversationId } = (req as any).sanitizedParams || req.params
   const { content, role } = req.body
 
   if (!content || !role) {
@@ -59,7 +60,7 @@ router.get("/:conversationId/messages", authenticate, async (req: Request, res: 
     throw new Error("User not authenticated")
   }
 
-  const { conversationId } = req.params
+  const { conversationId } = (req as any).sanitizedParams || req.params
 
   try {
     const messages = await getMessages(conversationId, req.user.sub)
@@ -79,7 +80,7 @@ router.get("/:conversationId/messages/:messageId", authenticate, async (req: Req
     throw new Error("User not authenticated")
   }
 
-  const { conversationId, messageId } = req.params
+  const { conversationId, messageId } = (req as any).sanitizedParams || req.params
 
   try {
     const message = await getMessageById(messageId, conversationId, req.user.sub)
@@ -109,7 +110,7 @@ router.put("/:conversationId/messages/:messageId", authenticate, async (req: Req
     throw new Error("User not authenticated")
   }
 
-  const { conversationId, messageId } = req.params
+  const { conversationId, messageId } = (req as any).sanitizedParams || req.params
   const { content } = req.body
 
   if (!content) {
@@ -140,7 +141,7 @@ router.delete("/:conversationId/messages/:messageId", authenticate, async (req: 
     throw new Error("User not authenticated")
   }
 
-  const { conversationId, messageId } = req.params
+  const { conversationId, messageId } = (req as any).sanitizedParams || req.params
 
   try {
     await softDeleteMessage(messageId, conversationId, req.user.sub)

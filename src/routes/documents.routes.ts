@@ -7,12 +7,9 @@ import { createDocument, listDocuments, getDocument, updateDocument, deleteDocum
 import { createDocumentSchema, updateDocumentSchema, listDocumentsSchema, documentIdSchema } from "../validators/document.validators"
 import { queueDocumentForProcessing } from "../queues/document.queue"
 import { privateCache, invalidateCache } from "../middleware/cache.middleware"
+import { tieredUploadLimiter } from "../middleware/rateLimit.middleware"
 import { prisma } from "../lib/prisma"
 import { customLogger } from "../lib/logger"
-import { generateAndStoreEmbeddings } from "../services/embedding.service"
-import { chunkDocument } from "../lib/chunker"
-import { extractText, detectFormat } from "../lib/documentExtractor"
-import { appEvents } from "../lib/events"
 
 const router = Router()
 
@@ -41,7 +38,7 @@ const upload = multer({
 })
 
 // POST /api/v1/documents - Create a new document (file upload or direct text)
-router.post("/", authenticate, upload.single('file'), async (req: Request, res: Response) => {
+router.post("/", authenticate, tieredUploadLimiter, upload.single('file'), async (req: Request, res: Response) => {
   if (!req.user) {
     throw new Error("User not authenticated")
   }
@@ -105,7 +102,7 @@ router.post("/", authenticate, upload.single('file'), async (req: Request, res: 
       })
     }
 
-    // Create document record
+    // Create document record in 'processing' status
     const document = await prisma.document.create({
       data: {
         user: {
@@ -113,127 +110,57 @@ router.post("/", authenticate, upload.single('file'), async (req: Request, res: 
         },
         title,
         content,
-        status: 'processing',
+        fileUrl: filename,
+        status: 'queued',
         mimeType: mimeType || 'text/plain',
         fileSize: fileSize || content.length
       }
     })
 
-    // Process document using new ingestion pipeline
-    let chunks: any[]
-    let pageCount: number | undefined
-
+    // Queue document for asynchronous processing
     try {
-      if (filename && mimeType !== 'text/plain') {
-        // Extract text from file (PDF, Markdown, etc.)
-        const format = detectFormat(filename)
-        const extracted = await extractText(content, format)
-        content = extracted.text
-        pageCount = extracted.pageCount
-      }
+      const job = await queueDocumentForProcessing(document.id, userId)
 
-      // Chunk the text
-      chunks = chunkDocument(content, {
-        maxTokens: 500,
-        overlapTokens: 50,
-        minChunkTokens: 10, // Lower minimum for short documents
+      customLogger.info(`Document queued for processing`, {
+        documentId: document.id,
+        jobId: job.id,
+        userId
       })
 
-    } catch (processingError) {
-      // Mark document as failed if processing fails
+      return res.status(202).json({
+        success: true,
+        data: {
+          documentId: document.id,
+          jobId: job.id,
+          title,
+          status: 'queued',
+          message: 'Document queued for processing. Check job status using jobId.'
+        }
+      })
+    } catch (queueError) {
+      // If queueing fails, mark document as failed
       await prisma.document.update({
         where: { id: document.id },
         data: {
           status: 'failed',
-          error: processingError instanceof Error ? processingError.message : 'Unknown processing error'
+          error: queueError instanceof Error ? queueError.message : 'Failed to queue document'
         }
       })
 
-      throw processingError
-    }
-
-    // Create chunks in database
-    const chunkRecords = await prisma.$transaction(
-      chunks.map((chunk, index) =>
-        prisma.chunk.create({
-          data: {
-            documentId: document.id,
-            index: chunk.index,
-            content: chunk.text,
-            tokenCount: chunk.tokenEstimate
-          }
-        })
-      )
-    )
-
-    // Generate embeddings and get actual costs
-    const startTime = Date.now();
-    const embeddingResult = await generateAndStoreEmbeddings(
-      chunkRecords.map(chunk => ({
-        id: chunk.id,
-        content: chunk.content
-      })),
-      userId,
-      document.id
-    )
-    const processingDuration = Date.now() - startTime;
-
-    // Use the actual cost from OpenAI
-    const actualCost = embeddingResult.cost;
-    const totalTokens = embeddingResult.tokensUsed;
-
-    // Update document status to completed
-    await prisma.document.update({
-      where: { id: document.id },
-      data: {
-        status: 'completed',
-        processedAt: new Date()
-      }
-    })
-
-    // Create usage log with actual cost directly
-    await prisma.usageLog.create({
-      data: {
-        userId: userId,
-        action: 'document_ingested',
-        resourceType: 'document',
-        resourceId: document.id,
-        metadata: JSON.stringify({
-          chunkCount: chunkRecords.length,
-          format: filename ? detectFormat(filename) : 'text',
-          pageCount: pageCount,
-          totalTokens: totalTokens,
-        }),
-        duration: processingDuration,
-        cost: actualCost > 0 ? actualCost : null,
-      },
-    });
-
-    customLogger.info('Usage log created with actual costs', {
-      documentId: document.id,
-      chunkCount: chunkRecords.length,
-      totalTokens,
-      actualCost: `$${actualCost.toFixed(6)}`,
-      processingDuration
-    });
-
-    customLogger.info(`Document processing completed`, {
-      documentId: document.id,
-      chunksCreated: chunkRecords.length,
-      tokensProcessed: chunks.reduce((sum, chunk) => sum + chunk.tokenEstimate, 0)
-    })
-
-    res.status(201).json({
-      success: true,
-      data: {
+      customLogger.error(`Failed to queue document for processing`, {
         documentId: document.id,
-        title,
-        status: 'completed',
-        chunksCreated: chunkRecords.length,
-        tokensProcessed: chunks.reduce((sum, chunk) => sum + chunk.tokenEstimate, 0),
-        message: 'Document processed successfully with real OpenAI embeddings'
-      }
-    })
+        error: queueError instanceof Error ? queueError.message : 'Unknown error'
+      })
+
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'QUEUE_ERROR',
+          message: 'Failed to queue document for processing',
+          details: queueError instanceof Error ? queueError.message : 'Unknown error'
+        }
+      })
+    }
 
   } catch (error: any) {
     customLogger.error(`Document upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`, {
@@ -269,7 +196,7 @@ router.get("/", authenticate, privateCache(300), async (req: Request, res: Respo
   }
 
   try {
-    const validatedQuery = listDocumentsSchema.parse(req.query)
+    const validatedQuery = listDocumentsSchema.parse((req as any).sanitizedQuery || req.query)
     const result = await listDocuments({
       ...validatedQuery,
       userId: req.user.sub
@@ -341,7 +268,7 @@ router.put("/:id", authenticate, invalidateCache(['doc:*', 'doc:list:*']), async
   }
 
   try {
-    const { id } = documentIdSchema.parse(req.params)
+    const { id } = documentIdSchema.parse((req as any).sanitizedParams || req.params)
     const validatedData = updateDocumentSchema.parse(req.body)
     
     // Get the current document to check if content is being updated
